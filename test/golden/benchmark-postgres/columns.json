@@ -1,0 +1,212 @@
+[
+  {
+    "table_name": "daily_metrics",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "daily_metrics",
+    "column_name": "metric_date",
+    "data_type": "date",
+    "is_nullable": "NO",
+    "udt_name": "date"
+  },
+  {
+    "table_name": "daily_metrics",
+    "column_name": "gmv",
+    "data_type": "numeric",
+    "is_nullable": "NO",
+    "udt_name": "numeric"
+  },
+  {
+    "table_name": "daily_metrics",
+    "column_name": "order_count",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "daily_metrics",
+    "column_name": "new_users",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "order_items",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "order_items",
+    "column_name": "order_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "order_items",
+    "column_name": "product_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "order_items",
+    "column_name": "quantity",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "order_items",
+    "column_name": "unit_price",
+    "data_type": "numeric",
+    "is_nullable": "NO",
+    "udt_name": "numeric"
+  },
+  {
+    "table_name": "order_items",
+    "column_name": "amount",
+    "data_type": "numeric",
+    "is_nullable": "NO",
+    "udt_name": "numeric"
+  },
+  {
+    "table_name": "orders",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "orders",
+    "column_name": "user_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "orders",
+    "column_name": "status",
+    "data_type": "character varying",
+    "is_nullable": "NO",
+    "udt_name": "varchar"
+  },
+  {
+    "table_name": "orders",
+    "column_name": "total_amount",
+    "data_type": "numeric",
+    "is_nullable": "NO",
+    "udt_name": "numeric"
+  },
+  {
+    "table_name": "orders",
+    "column_name": "created_at",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "NO",
+    "udt_name": "timestamp"
+  },
+  {
+    "table_name": "products",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "products",
+    "column_name": "name",
+    "data_type": "character varying",
+    "is_nullable": "NO",
+    "udt_name": "varchar"
+  },
+  {
+    "table_name": "products",
+    "column_name": "category",
+    "data_type": "character varying",
+    "is_nullable": "NO",
+    "udt_name": "varchar"
+  },
+  {
+    "table_name": "products",
+    "column_name": "price",
+    "data_type": "numeric",
+    "is_nullable": "NO",
+    "udt_name": "numeric"
+  },
+  {
+    "table_name": "products",
+    "column_name": "created_at",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "NO",
+    "udt_name": "timestamp"
+  },
+  {
+    "table_name": "regions",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "regions",
+    "column_name": "name",
+    "data_type": "character varying",
+    "is_nullable": "NO",
+    "udt_name": "varchar"
+  },
+  {
+    "table_name": "regions",
+    "column_name": "country",
+    "data_type": "character varying",
+    "is_nullable": "NO",
+    "udt_name": "varchar"
+  },
+  {
+    "table_name": "users",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "users",
+    "column_name": "email",
+    "data_type": "character varying",
+    "is_nullable": "NO",
+    "udt_name": "varchar"
+  },
+  {
+    "table_name": "users",
+    "column_name": "name",
+    "data_type": "character varying",
+    "is_nullable": "NO",
+    "udt_name": "varchar"
+  },
+  {
+    "table_name": "users",
+    "column_name": "region_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "users",
+    "column_name": "channel",
+    "data_type": "character varying",
+    "is_nullable": "NO",
+    "udt_name": "varchar"
+  },
+  {
+    "table_name": "users",
+    "column_name": "created_at",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "NO",
+    "udt_name": "timestamp"
+  }
+]

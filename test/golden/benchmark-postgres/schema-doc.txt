@@ -1,0 +1,47 @@
+CREATE TABLE daily_metrics (
+  id integer NOT NULL,
+  metric_date date NOT NULL,
+  gmv numeric NOT NULL,
+  order_count integer NOT NULL,
+  new_users integer NOT NULL
+);
+
+CREATE TABLE order_items (
+  id integer NOT NULL,
+  order_id integer NOT NULL,
+  product_id integer NOT NULL,
+  quantity integer NOT NULL,
+  unit_price numeric NOT NULL,
+  amount numeric NOT NULL
+);
+
+CREATE TABLE orders (
+  id integer NOT NULL,
+  user_id integer NOT NULL,
+  status character varying NOT NULL,
+  total_amount numeric NOT NULL,
+  created_at timestamp without time zone NOT NULL
+);
+
+CREATE TABLE products (
+  id integer NOT NULL,
+  name character varying NOT NULL,
+  category character varying NOT NULL,
+  price numeric NOT NULL,
+  created_at timestamp without time zone NOT NULL
+);
+
+CREATE TABLE regions (
+  id integer NOT NULL,
+  name character varying NOT NULL,
+  country character varying NOT NULL
+);
+
+CREATE TABLE users (
+  id integer NOT NULL,
+  email character varying NOT NULL,
+  name character varying NOT NULL,
+  region_id integer,
+  channel character varying NOT NULL,
+  created_at timestamp without time zone NOT NULL
+);

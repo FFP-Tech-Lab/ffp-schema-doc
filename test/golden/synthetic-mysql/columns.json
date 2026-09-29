@@ -1,0 +1,114 @@
+[
+  {
+    "data_type": "int",
+    "table_name": "OrderLines",
+    "column_name": "order_id",
+    "column_type": "int",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "int",
+    "table_name": "OrderLines",
+    "column_name": "line_no",
+    "column_type": "int",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "varchar",
+    "table_name": "OrderLines",
+    "column_name": "note",
+    "column_type": "varchar(50)",
+    "is_nullable": "YES"
+  },
+  {
+    "data_type": "int",
+    "table_name": "Orders",
+    "column_name": "id",
+    "column_type": "int",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "int",
+    "table_name": "Orders",
+    "column_name": "region_id",
+    "column_type": "int",
+    "is_nullable": "YES"
+  },
+  {
+    "data_type": "enum",
+    "table_name": "Orders",
+    "column_name": "status",
+    "column_type": "enum('pending','已完成','cancelled')",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "varchar",
+    "table_name": "Orders",
+    "column_name": "channel",
+    "column_type": "varchar(32)",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "int",
+    "table_name": "order_items",
+    "column_name": "order_id",
+    "column_type": "int",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "int",
+    "table_name": "order_items",
+    "column_name": "line_no",
+    "column_type": "int",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "int",
+    "table_name": "order_items",
+    "column_name": "qty",
+    "column_type": "int",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "int",
+    "table_name": "order_status_view",
+    "column_name": "id",
+    "column_type": "int",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "enum",
+    "table_name": "order_status_view",
+    "column_name": "status",
+    "column_type": "enum('pending','已完成','cancelled')",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "int",
+    "table_name": "regions",
+    "column_name": "id",
+    "column_type": "int",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "varchar",
+    "table_name": "regions",
+    "column_name": "name",
+    "column_type": "varchar(100)",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "int",
+    "table_name": "订单",
+    "column_name": "id",
+    "column_type": "int",
+    "is_nullable": "NO"
+  },
+  {
+    "data_type": "enum",
+    "table_name": "订单",
+    "column_name": "state",
+    "column_type": "enum('待支付','已完成')",
+    "is_nullable": "NO"
+  }
+]

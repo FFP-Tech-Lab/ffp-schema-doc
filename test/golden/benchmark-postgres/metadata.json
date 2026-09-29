@@ -1,0 +1,22 @@
+{
+  "sourceRepo": "https://github.com/ChuTingzj/ai-bi",
+  "sourceCommit": "fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2",
+  "capture": "db-captured",
+  "engine": "PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)",
+  "database": "benchmark_bi",
+  "seed": [
+    "scripts/seed/01-schema.sql",
+    "scripts/seed/02-data.sql"
+  ],
+  "schemaDoc": "benchmark/scripts/setup.ts calls buildDdl with no foreign keys",
+  "schemaDocWithForeignKeys": "DataSourceService.extractPostgresSchema post-processing, including foreign keys",
+  "tableCount": 6,
+  "introspectionSqlSha256": {
+    "pg.columns": "76c459314096227f0d7c0892c1f59045928c5410537f13963850a9753578bb90",
+    "pg.foreignKeys": "c6dca7fe151122b462ef4a93417c1d21c5132b0eabbaff9de9817e77c3aef592",
+    "pg.nativeEnums": "c46aa1a6438f908595cfe1c2b8d4022b04c7e71d0affb7801fd8f10f9ee9e62a",
+    "pg.checks": "bcedd839de2e5e81e41bccac3c4e01daf2c388a8051625f13329b007ed21aad7",
+    "mysql.columns": "3b089679e8524fef2df845b892d5aa520809815ce438ba05b523d772ab112249",
+    "mysql.foreignKeys": "485b68b3fb0e767e595ae02720f298d5025471d57568884cebb6dbb725fa8c27"
+  }
+}
