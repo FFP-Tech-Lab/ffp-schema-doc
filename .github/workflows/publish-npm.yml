@@ -8,6 +8,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      LC_ALL: C.UTF-8
     permissions:
       contents: read
     steps:
@@ -45,7 +47,11 @@ jobs:
         run: pnpm typecheck
 
       - name: Test
-        run: pnpm test
+        run: |
+          set -euo pipefail
+          echo "LC_ALL=${LC_ALL}"
+          locale
+          pnpm test
 
       - name: Diff function bodies
         run: pnpm diff-bodies

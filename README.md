@@ -115,14 +115,14 @@ pnpm capture-golden
 
 ```bash
 pnpm install
-pnpm test
+LC_ALL=en_US.UTF-8 pnpm test
 pnpm diff-bodies
 pnpm diff-bodies:prove
 pnpm check-standalone
 pnpm build
 ```
 
-The test script quotes `test/**/*.test.ts` so the shell does not expand the glob. `engines` stays `node >= 20`. The library does not require Node 21.
+Run the suite as `LC_ALL=en_US.UTF-8 pnpm test`, or with any of `C.UTF-8`, `en_US.UTF-8`, `zh_CN.UTF-8`, and `sv_SE.UTF-8`. An empty or unlisted `LC_ALL` intentionally fails the golden tests. The test script quotes `test/**/*.test.ts` so the shell does not expand the glob. `engines` stays `node >= 20`. The library does not require Node 21.
 
 `pnpm check-standalone` scans tracked file paths, file contents, and `package.json`. The term list is built by joining fragments, and the allow-list is empty. CI runs it.
 
@@ -134,7 +134,7 @@ The package builds to CommonJS with shipped `.d.ts` types. There is no dual ESM 
 
 Tags must be `vX.Y.Z`. Any other tag, including prereleases, fails the workflow. Prereleases are not published under `--tag next`. The test job also runs `scripts/check-publish-tag.mjs` and fails unless the tag equals `v` plus the `package.json` version. The tagged commit must be an ancestor of `origin/main`, and the CI workflow must already have a successful run for that commit.
 
-The publish workflow has two jobs. `test` has `contents: read` only. `publish` needs `test`, uses the `npm-publish` environment, and has `contents: read`, `id-token: write`, and `actions: read` (the last is what lets the job read the CI run for this commit).
+The publish workflow has two jobs. `test` has `contents: read` only and sets `LC_ALL=C.UTF-8` (present on GitHub ubuntu runners). The test step logs `echo $LC_ALL` and `locale` before `pnpm test`. `publish` needs `test`, uses the `npm-publish` environment, and has `contents: read`, `id-token: write`, and `actions: read` (the last is what lets the job read the CI run for this commit). The publish job does not run the test suite.
 
 The publish job installs Node 22, then `npm install -g npm@^11.5.1` and logs `npm --version`. OIDC trusted publishing needs npm 11.5.1 or newer, and Node 22 bundles npm 10.x. It installs dependencies with `pnpm install --frozen-lockfile --ignore-scripts`, then builds. Publish uses `npm publish`, not `pnpm publish`.
 
