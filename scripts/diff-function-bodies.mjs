@@ -9,6 +9,22 @@
  * which in the snapshot is a relative `./schema-enum` import. A change to
  * MAX_ENUM_VALUES, a type, a regex, or a new declaration fails.
  *
+ * normalizeImports rewrites every `from '...'` specifier, so an import-path
+ * redirect (for example schema-fk.ts pointing at a different module) would
+ * match the byte compare. The script therefore also requires the exact import
+ * lines listed in PINNED_IMPORTS. Those lines are the complete `from '...'`
+ * set in the three compared files. A specifier change fails that pin.
+ * Residual: `require()` and side-effect `import '...'` (no `from`) are not
+ * rewritten and are not in the pin list. None of the compared files use them.
+ * A one-sided addition still fails the byte compare. A matching pair of
+ * `from` specifiers that is not yet in PINNED_IMPORTS fails the pin until
+ * the list is updated in the same change.
+ *
+ * Each reference file's raw sha256 is pinned in REFERENCE_SHA256, including
+ * guidance-types.ts and datasource.service.ts. Editing a reference copy fails
+ * even when src/ is edited to match, and even when the edit sits outside a
+ * compared slice. The pins are of the bytes in this tree, not a git blob id.
+ *
  * introspect.ts is new. Its function bodies are compared to explicit
  * 1-indexed line ranges of datasource.service.ts:
  *   buildPostgresSchemaDoc <- lines 230-245
@@ -17,7 +33,8 @@
  * datasource.service.ts is not compared as a whole file. Its two package
  * import specifiers were rewritten to the neutral module names
  * `datasource-db` and `schema-doc-shared`. Those lines sit outside the
- * ranges above. The query text is unchanged.
+ * ranges above. The query text is unchanged. The file's sha256 pin still
+ * rejects an edit to the reference copy.
  *
  * Normalization for those slices, and nothing else:
  *   1. Dedent (strip the shared leading indent).
@@ -32,16 +49,49 @@
  *          -> mapMysqlForeignKeyRows(foreignKeyRows)
  * Any other difference fails.
  *
- * `node scripts/diff-function-bodies.mjs --prove-mutation-fails` checks that
- * changing MAX_ENUM_VALUES from 50 to 51 fails the whole-file compare, without
- * writing that change to disk.
+ * `node scripts/diff-function-bodies.mjs --prove-mutation-fails` checks, in
+ * memory, that each of these fails the gate:
+ *   - MAX_ENUM_VALUES 50 -> 51
+ *   - reversing the localeCompare sort
+ *   - widening the parseSchemaDoc table-name regex
+ *   - flipping the buildMysqlSchemaDoc enum guard
+ *   - changing the schema-fk.ts ordinal fallback
+ *   - changing reference schema-enum.ts bytes without updating the sha256 pin
+ *   - redirecting the schema-fk.ts import (normalizeImports hides it; the
+ *     pinned import line does not)
+ * It does not write those edits to disk.
  */
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 
 const REFERENCE_COMMIT = 'fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2';
 const root = process.cwd();
+
+const REFERENCE_SHA256 = {
+  'test/reference/fa3cbe7/schema-enum.ts':
+    'ba685975ac8886fde7af8aaba7d92ad2e52a85afe19345a16512f0236749300e',
+  'test/reference/fa3cbe7/schema-parse.ts':
+    'b63433af98b081bc2dc2878d5aa7c23a26c2905eb341ef520c87622cf263b2cc',
+  'test/reference/fa3cbe7/schema-fk.ts':
+    '16f9630e5f1d1a03cb53db1b2c98dfaedeb1caed5968e7a0e4b3380c793c8dac',
+  'test/reference/fa3cbe7/guidance-types.ts':
+    '5b148ab4f5a156a11b990b53b019269d2de805b599630b716d05625477e0923a',
+  'test/reference/fa3cbe7/datasource.service.ts':
+    '0ce0d59364489f6e32c36684ab8ca7e3a7be5c833a26c4922db11560923b208c',
+};
+
+const PINNED_IMPORTS = {
+  'src/schema-enum.ts': [],
+  'test/reference/fa3cbe7/schema-enum.ts': [],
+  'src/schema-parse.ts': ["} from './guidance-types';"],
+  'test/reference/fa3cbe7/schema-parse.ts': ["} from './guidance-types';"],
+  'src/schema-fk.ts': ["import type { SchemaForeignKeyRow } from './schema-enum';"],
+  'test/reference/fa3cbe7/schema-fk.ts': [
+    "import type { SchemaForeignKeyRow } from './schema-enum';",
+  ],
+};
 
 const FILE_PAIRS = [
   {
@@ -95,6 +145,14 @@ const SLICES = [
 
 function read(rel) {
   return readFileSync(path.join(root, rel), 'utf8');
+}
+
+function sha256(text) {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+function importLines(src) {
+  return src.split('\n').filter((line) => /from\s+['"]/.test(line));
 }
 
 function normalizeImports(src) {
@@ -178,10 +236,10 @@ function firstDiff(a, b) {
   return 'files differ only by length';
 }
 
-function wholeFileDiffs() {
+function wholeFileDiffs(pkgOverrides = {}) {
   const diffs = [];
   for (const pair of FILE_PAIRS) {
-    const pkg = normalizeImports(read(pair.pkg));
+    const pkg = normalizeImports(pkgOverrides[pair.pkg] ?? read(pair.pkg));
     const ref = normalizeImports(read(pair.ref));
     if (pkg !== ref) {
       diffs.push(`${pair.pkg} !== ${pair.ref}\n${firstDiff(pkg, ref)}`);
@@ -190,8 +248,8 @@ function wholeFileDiffs() {
   return diffs;
 }
 
-function sliceDiffs() {
-  const introspect = read('src/introspect.ts');
+function sliceDiffs(introspectOverride) {
+  const introspect = introspectOverride ?? read('src/introspect.ts');
   const datasource = read(DATASOURCE);
   const diffs = [];
   for (const slice of SLICES) {
@@ -208,35 +266,154 @@ function sliceDiffs() {
   return diffs;
 }
 
+function hashProblems(overrides = {}) {
+  const problems = [];
+  for (const [rel, expected] of Object.entries(REFERENCE_SHA256)) {
+    const actual = sha256(overrides[rel] ?? read(rel));
+    if (actual !== expected) {
+      problems.push(`${rel} sha256 ${actual} !== pinned ${expected}`);
+    }
+  }
+  return problems;
+}
+
+function importProblems(overrides = {}) {
+  const problems = [];
+  for (const [rel, expected] of Object.entries(PINNED_IMPORTS)) {
+    const actual = importLines(overrides[rel] ?? read(rel));
+    if (actual.join('\n') !== expected.join('\n')) {
+      problems.push(
+        `${rel} import lines ${JSON.stringify(actual)} !== pinned ${JSON.stringify(expected)}`,
+      );
+    }
+  }
+  return problems;
+}
+
+function requireChange(label, before, after) {
+  if (before === after) {
+    console.error(`could not apply mutation: ${label}`);
+    process.exit(1);
+  }
+}
+
+function requireDetected(label, diffs) {
+  if (diffs.length === 0) {
+    console.error(`${label} was not detected`);
+    process.exit(1);
+  }
+  console.log(`ok: ${label} fails the body diff`);
+}
+
 function proveMutationFails() {
-  const pair = FILE_PAIRS[0];
-  const original = read(pair.pkg);
-  const mutated = original.replace(
+  const clean = [
+    ...wholeFileDiffs(),
+    ...sliceDiffs(),
+    ...hashProblems(),
+    ...importProblems(),
+  ];
+  if (clean.length > 0) {
+    console.error('clean tree does not match the frozen bodies or pins');
+    for (const diff of clean) {
+      console.error(`\n${diff}`);
+    }
+    process.exit(1);
+  }
+
+  const enumSrc = read('src/schema-enum.ts');
+  const maxMutated = enumSrc.replace(
     'const MAX_ENUM_VALUES = 50;',
     'const MAX_ENUM_VALUES = 51;',
   );
-  if (mutated === original || !mutated.includes('const MAX_ENUM_VALUES = 51;')) {
-    console.error('could not mutate MAX_ENUM_VALUES from 50 to 51');
+  requireChange('MAX_ENUM_VALUES 50 -> 51', enumSrc, maxMutated);
+  requireDetected(
+    'MAX_ENUM_VALUES 50 -> 51',
+    wholeFileDiffs({ 'src/schema-enum.ts': maxMutated }),
+  );
+
+  const sortMutated = enumSrc.replace(
+    'out.sort((a, b) => a.localeCompare(b));',
+    'out.sort((a, b) => b.localeCompare(a));',
+  );
+  requireChange('localeCompare sort', enumSrc, sortMutated);
+  requireDetected(
+    'localeCompare sort reversed',
+    wholeFileDiffs({ 'src/schema-enum.ts': sortMutated }),
+  );
+
+  const parseSrc = read('src/schema-parse.ts');
+  const parseMutated = parseSrc.replace(
+    '/CREATE TABLE\\s+["\'`]?(\\w+)["\'`]?/i',
+    '/CREATE TABLE\\s+["\'`]?(\\w*)["\'`]?/i',
+  );
+  requireChange('parseSchemaDoc table-name regex', parseSrc, parseMutated);
+  requireDetected(
+    'parseSchemaDoc table-name regex',
+    wholeFileDiffs({ 'src/schema-parse.ts': parseMutated }),
+  );
+
+  const introspect = read('src/introspect.ts');
+  const mysqlMutated = introspect.replace(
+    "if (row.data_type.toLowerCase() !== 'enum') continue;",
+    "if (row.data_type.toLowerCase() === 'enum') continue;",
+  );
+  requireChange('buildMysqlSchemaDoc enum guard', introspect, mysqlMutated);
+  requireDetected('buildMysqlSchemaDoc enum guard', sliceDiffs(mysqlMutated));
+
+  const fkSrc = read('src/schema-fk.ts');
+  const fkMutated = fkSrc.replace(
+    'ordinal_position: Number(r.ordinal_position) || 1,',
+    'ordinal_position: Number(r.ordinal_position) || 2,',
+  );
+  requireChange('schema-fk.ts ordinal fallback', fkSrc, fkMutated);
+  requireDetected(
+    'schema-fk.ts ordinal fallback',
+    wholeFileDiffs({ 'src/schema-fk.ts': fkMutated }),
+  );
+
+  const refEnumRel = 'test/reference/fa3cbe7/schema-enum.ts';
+  const refEnum = read(refEnumRel);
+  const refMutated = refEnum.replace(
+    'const MAX_ENUM_VALUES = 50;',
+    'const MAX_ENUM_VALUES = 51;',
+  );
+  requireChange('reference schema-enum.ts bytes', refEnum, refMutated);
+  if (sha256(refEnum) !== REFERENCE_SHA256[refEnumRel]) {
+    console.error('pinned sha256 does not match the current reference file');
     process.exit(1);
   }
-  const ref = normalizeImports(read(pair.ref));
-  if (normalizeImports(original) !== ref) {
-    console.error(`${pair.pkg} does not match the frozen reference before mutation`);
+  const refDiffs = hashProblems({ [refEnumRel]: refMutated });
+  if (refDiffs.length === 0) {
+    console.error('reference byte change was not detected by the pinned sha256');
     process.exit(1);
   }
-  if (normalizeImports(mutated) === ref) {
-    console.error('MAX_ENUM_VALUES 50 -> 51 was not detected');
+  console.log('ok: reference schema-enum.ts byte change fails the pinned sha256');
+
+  const redirected = fkSrc.replace("from './schema-enum'", "from './schema-parse'");
+  requireChange('schema-fk.ts import redirect', fkSrc, redirected);
+  if (normalizeImports(redirected) !== normalizeImports(fkSrc)) {
+    console.error('normalizeImports unexpectedly exposed an import-path redirect');
+    process.exit(1);
+  }
+  const importDiffs = importProblems({ 'src/schema-fk.ts': redirected });
+  if (importDiffs.length === 0) {
+    console.error('pinned import line did not catch the schema-fk.ts redirect');
     process.exit(1);
   }
   console.log(
-    `ok: MAX_ENUM_VALUES 50 -> 51 fails whole-file equality against ${pair.ref} (${REFERENCE_COMMIT})`,
+    'ok: schema-fk.ts import redirect fails the pinned import line (normalizeImports hides it)',
   );
 }
 
 if (process.argv.includes('--prove-mutation-fails')) {
   proveMutationFails();
 } else {
-  const diffs = [...wholeFileDiffs(), ...sliceDiffs()];
+  const diffs = [
+    ...wholeFileDiffs(),
+    ...sliceDiffs(),
+    ...hashProblems(),
+    ...importProblems(),
+  ];
   if (diffs.length > 0) {
     console.error(`body diff failed against ${REFERENCE_COMMIT}`);
     for (const diff of diffs) {
@@ -244,5 +421,7 @@ if (process.argv.includes('--prove-mutation-fails')) {
     }
     process.exit(1);
   }
-  console.log(`ok: whole-file and introspect slices match ${REFERENCE_COMMIT}`);
+  console.log(
+    `ok: whole-file and introspect slices match ${REFERENCE_COMMIT}; reference sha256 and import lines are pinned`,
+  );
 }

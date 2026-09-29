@@ -62,7 +62,7 @@ jobs:
       - name: Diff function bodies
         run: pnpm diff-bodies
 
-      - name: Prove MAX_ENUM_VALUES mutation fails the diff
+      - name: Prove body-diff mutations fail
         run: pnpm diff-bodies:prove
 
       - name: Reject extracted-project names
