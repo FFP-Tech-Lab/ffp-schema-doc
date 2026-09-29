@@ -1,20 +1,32 @@
 /**
- * Diff exported (and helper) function bodies against the ai-bi source
- * frozen at AI_BI_COMMIT under test/reference/.
+ * Whole-file equality against the ai-bi sources frozen at AI_BI_COMMIT
+ * under test/reference/. Offline: it does not fetch GitHub.
  *
- * Offline: the reference copies are committed. Imports are stripped before
- * comparison, so schema-fk.ts may import ./schema-enum instead of @ai-bi/shared.
+ * schema-enum.ts, schema-parse.ts, and schema-fk.ts are compared in full
+ * after normalizing import specifiers (`from '...'` -> `from 'NORMALIZED'`).
+ * A change to MAX_ENUM_VALUES, a type, a regex, or a new declaration fails.
  *
- * Moved files must also match in full once import lines are removed, so a
- * change to MAX_ENUM_VALUES (or any other non-function text) fails this diff.
+ * introspect.ts is new. Its function bodies are compared to explicit
+ * 1-indexed line ranges of datasource.service.ts:
+ *   buildPostgresSchemaDoc <- lines 230-245 (extractPostgresSchema)
+ *   buildMysqlSchemaDoc    <- lines 341-369 (extractMysqlSchema)
  *
- * Moved functions must have an empty body diff.
- * buildPostgresSchemaDoc / buildMysqlSchemaDoc are new. Their verbatim slices
- * (typedRows mapping, mergeEnumMaps(native, check), the MySQL enum loop,
- * columnRows mapping, and the tableCount return) are diffed against
- * datasource.service.ts. The three `await this.fetch*` calls are not pure;
- * those lines are the FK/enum mapper calls instead, and this script checks
- * that substitution explicitly.
+ * Normalization for those slices, and nothing else:
+ *   1. Dedent (strip the shared leading indent).
+ *   2. Replace these fetch calls with the mapper calls the package uses:
+ *        await this.fetchPostgresNativeEnums(client, rows)
+ *          -> buildNativeEnumMap(rows, nativeEnumRows)
+ *        await this.fetchPostgresCheckEnums(client)
+ *          -> buildCheckEnumMap(checkRows)
+ *        await this.fetchPostgresForeignKeys(client)
+ *          -> mapPgForeignKeyRows(foreignKeyRows)
+ *        await this.fetchMysqlForeignKeys(conn, ds.database)
+ *          -> mapMysqlForeignKeyRows(foreignKeyRows)
+ * Any other difference fails.
+ *
+ * `node scripts/diff-function-bodies.mjs --prove-mutation-fails` checks that
+ * changing MAX_ENUM_VALUES from 50 to 51 fails the whole-file compare, without
+ * writing that change to disk.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -38,204 +50,191 @@ const FILE_PAIRS = [
   },
 ];
 
+const DATASOURCE = 'test/reference/ai-bi/apps/api/src/datasource/datasource.service.ts';
+
+const SLICES = [
+  {
+    fn: 'buildPostgresSchemaDoc',
+    start: 230,
+    end: 245,
+    replacements: [
+      [
+        'const nativeEnums = await this.fetchPostgresNativeEnums(client, rows);',
+        'const nativeEnums = buildNativeEnumMap(rows, nativeEnumRows);',
+      ],
+      [
+        'const checkEnums = await this.fetchPostgresCheckEnums(client);',
+        'const checkEnums = buildCheckEnumMap(checkRows);',
+      ],
+      [
+        'const foreignKeys = await this.fetchPostgresForeignKeys(client);',
+        'const foreignKeys = mapPgForeignKeyRows(foreignKeyRows);',
+      ],
+    ],
+  },
+  {
+    fn: 'buildMysqlSchemaDoc',
+    start: 341,
+    end: 369,
+    replacements: [
+      [
+        'const foreignKeys = await this.fetchMysqlForeignKeys(conn, ds.database);',
+        'const foreignKeys = mapMysqlForeignKeyRows(foreignKeyRows);',
+      ],
+    ],
+  },
+];
+
 function read(rel) {
   return readFileSync(path.join(root, rel), 'utf8');
 }
 
-function stripImports(src) {
-  return src
-    .split('\n')
-    .filter((line) => !/^\s*import\s/.test(line))
+function normalizeImports(src) {
+  return src.replace(/from\s+(['"])[^'"]+\1/g, 'from $1NORMALIZED$1');
+}
+
+function dedent(text) {
+  const lines = text.split('\n');
+  const indents = lines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => line.match(/^[ ]*/)[0].length);
+  const min = indents.length === 0 ? 0 : Math.min(...indents);
+  return lines
+    .map((line) => (line.trim().length === 0 ? '' : line.slice(min)))
     .join('\n');
 }
 
-function sourceFile(rel, src) {
-  return ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+function normalizedBlock(text) {
+  return `${dedent(text).trim()}\n`;
 }
 
-function functionBodies(rel) {
-  const src = stripImports(read(rel));
-  const sf = sourceFile(rel, src);
-  const bodies = new Map();
-  const visit = (node) => {
-    if (ts.isFunctionDeclaration(node) && node.name && node.body) {
-      const start = node.body.getStart(sf);
-      bodies.set(node.name.text, src.slice(start, node.body.end));
+function sliceLines(src, start, end) {
+  const lines = src.split('\n');
+  return lines.slice(start - 1, end).join('\n');
+}
+
+function applyReplacements(text, replacements) {
+  let out = text;
+  for (const [from, to] of replacements) {
+    if (!out.includes(from)) {
+      throw new Error(`reference slice is missing the expected line:\n${from}`);
+    }
+    out = out.replaceAll(from, to);
+  }
+  if (out.includes('this.fetch')) {
+    throw new Error(`unreplaced this.fetch remains after normalization:\n${out}`);
+  }
+  return out;
+}
+
+function functionBody(src, name) {
+  const sourceFile = ts.createSourceFile(
+    'introspect.ts',
+    src,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  let body = null;
+  function visit(node) {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name &&
+      node.name.text === name &&
+      node.body
+    ) {
+      body = node.body;
     }
     ts.forEachChild(node, visit);
-  };
-  visit(sf);
-  return bodies;
-}
-
-function canonical(text) {
-  const lines = text.replace(/\s*$/, '').split('\n');
-  while (lines.length > 0 && lines[0].trim() === '') lines.shift();
-  const rest = lines.slice(1).filter((line) => line.trim().length > 0);
-  const min =
-    rest.length > 0
-      ? Math.min(...rest.map((line) => line.match(/^ */)[0].length))
-      : 0;
-  return lines
-    .map((line, index) => {
-      if (index === 0) return line.trimStart();
-      if (line.trim().length === 0) return '';
-      const indent = line.match(/^ */)[0].length;
-      return line.slice(Math.min(min, indent));
-    })
-    .join('\n');
-}
-
-function grab(src, label, pattern) {
-  const match = src.match(pattern);
-  if (!match) {
-    throw new Error(`missing snippet ${label}`);
   }
-  return canonical(match[0]);
-}
-
-function grabReturn(src, label, schemaCall) {
-  const idx = src.indexOf(schemaCall);
-  if (idx < 0) throw new Error(`missing snippet ${label}: ${schemaCall}`);
-  const start = src.lastIndexOf('return {', idx);
-  const end = src.indexOf('};', idx);
-  if (start < 0 || end < 0) throw new Error(`missing return for ${label}`);
-  return canonical(src.slice(start, end + 2));
-}
-
-function assertEqual(label, actual, expected) {
-  if (actual === expected) {
-    console.log(`ok ${label}`);
-    return;
+  visit(sourceFile);
+  if (!body) {
+    throw new Error(`missing function ${name}`);
   }
-  console.error(`DIFF ${label}`);
-  console.error('--- package ---');
-  console.error(actual);
-  console.error('--- ai-bi ---');
-  console.error(expected);
-  process.exitCode = 1;
+  const text = body.getText(sourceFile);
+  if (!text.startsWith('{') || !text.endsWith('}')) {
+    throw new Error(`function ${name} body is not a block`);
+  }
+  return text.slice(1, -1);
 }
 
-console.log(`ai-bi ${AI_BI_COMMIT}`);
-
-for (const pair of FILE_PAIRS) {
-  const pkgBodies = functionBodies(pair.pkg);
-  const refBodies = functionBodies(pair.ref);
-  const names = [...refBodies.keys()];
-  if (names.length === 0) {
-    throw new Error(`no functions in ${pair.ref}`);
-  }
-  for (const name of names) {
-    const pkgBody = pkgBodies.get(name);
-    const refBody = refBodies.get(name);
-    if (pkgBody === undefined) {
-      console.error(`missing function ${name} in ${pair.pkg}`);
-      process.exitCode = 1;
-      continue;
+function firstDiff(a, b) {
+  const aLines = a.split('\n');
+  const bLines = b.split('\n');
+  const limit = Math.max(aLines.length, bLines.length);
+  for (let i = 0; i < limit; i += 1) {
+    if (aLines[i] !== bLines[i]) {
+      return `line ${i + 1}\n  pkg: ${aLines[i] ?? '<eof>'}\n  ref: ${bLines[i] ?? '<eof>'}`;
     }
-    assertEqual(`${pair.pkg} ${name}`, pkgBody, refBody);
   }
-  assertEqual(
-    `whole file ${pair.pkg} minus imports`,
-    stripImports(read(pair.pkg)),
-    stripImports(read(pair.ref)),
+  return 'files differ only by length';
+}
+
+function wholeFileDiffs() {
+  const diffs = [];
+  for (const pair of FILE_PAIRS) {
+    const pkg = normalizeImports(read(pair.pkg));
+    const ref = normalizeImports(read(pair.ref));
+    if (pkg !== ref) {
+      diffs.push(`${pair.pkg} !== ${pair.ref}\n${firstDiff(pkg, ref)}`);
+    }
+  }
+  return diffs;
+}
+
+function sliceDiffs() {
+  const introspect = read('src/introspect.ts');
+  const datasource = read(DATASOURCE);
+  const diffs = [];
+  for (const slice of SLICES) {
+    const reference = normalizedBlock(
+      applyReplacements(sliceLines(datasource, slice.start, slice.end), slice.replacements),
+    );
+    const body = normalizedBlock(functionBody(introspect, slice.fn));
+    if (body !== reference) {
+      diffs.push(
+        `${slice.fn} !== datasource.service.ts lines ${slice.start}-${slice.end}\n${firstDiff(body, reference)}`,
+      );
+    }
+  }
+  return diffs;
+}
+
+function proveMutationFails() {
+  const pair = FILE_PAIRS[0];
+  const original = read(pair.pkg);
+  const mutated = original.replace(
+    'const MAX_ENUM_VALUES = 50;',
+    'const MAX_ENUM_VALUES = 51;',
+  );
+  if (mutated === original || !mutated.includes('const MAX_ENUM_VALUES = 51;')) {
+    console.error('could not mutate MAX_ENUM_VALUES from 50 to 51');
+    process.exit(1);
+  }
+  const ref = normalizeImports(read(pair.ref));
+  if (normalizeImports(original) !== ref) {
+    console.error(`${pair.pkg} does not match the frozen reference before mutation`);
+    process.exit(1);
+  }
+  if (normalizeImports(mutated) === ref) {
+    console.error('MAX_ENUM_VALUES 50 -> 51 was not detected');
+    process.exit(1);
+  }
+  console.log(
+    `ok: MAX_ENUM_VALUES 50 -> 51 fails whole-file equality against ${pair.ref} (${AI_BI_COMMIT})`,
   );
 }
 
-const guidancePkg = read('src/guidance-types.ts').trim();
-const guidanceRef = read('test/reference/ai-bi/packages/shared/src/guidance-types.ts');
-if (!guidanceRef.includes(guidancePkg)) {
-  console.error('DIFF src/guidance-types.ts is not a verbatim slice of ai-bi guidance-types.ts');
-  process.exitCode = 1;
-} else if (/GuidanceMessageIntent|isGuidanceMessageIntent|GuidanceFilter|GuidancePayload/.test(guidancePkg)) {
-  console.error('guidance-types.ts includes types parse does not need');
-  process.exitCode = 1;
+if (process.argv.includes('--prove-mutation-fails')) {
+  proveMutationFails();
 } else {
-  console.log('ok src/guidance-types.ts interfaces');
-}
-
-const service = read('test/reference/ai-bi/apps/api/src/datasource/datasource.service.ts');
-const introspect = read('src/introspect.ts');
-
-const slices = [
-  {
-    label: 'pg typedRows mapping',
-    pattern:
-      /const typedRows: SchemaColumnRow\[\] = rows\.map\(\(r\) => \(\{[\s\S]*?is_nullable: r\.is_nullable,[\s\S]*?\}\)\);/,
-  },
-  {
-    label: 'pg mergeEnumMaps(native, check)',
-    pattern: /const enumMap = mergeEnumMaps\(nativeEnums, checkEnums\);/,
-  },
-  {
-    label: 'pg tableCount return',
-    schemaCall: 'schemaDoc: buildDdl(typedRows, enumMap, foreignKeys)',
-  },
-  {
-    label: 'mysql typedRows cast',
-    pattern:
-      /const typedRows = rows as Array<\{[\s\S]*?column_type: string;[\s\S]*?\}>;/,
-  },
-  {
-    label: 'mysql enum loop',
-    pattern:
-      /const enumMap: EnumValueMap = new Map\(\);[\s\S]*?for \(const row of typedRows\) \{[\s\S]*?if \(row\.data_type\.toLowerCase\(\) !== 'enum'\) continue;[\s\S]*?enumMap\.set\(columnEnumKey\(row\.table_name, row\.column_name\), values\);[\s\S]*?\}/,
-  },
-  {
-    label: 'mysql columnRows mapping',
-    pattern:
-      /const columnRows: SchemaColumnRow\[\] = typedRows\.map\(\(r\) => \(\{[\s\S]*?is_nullable: r\.is_nullable,[\s\S]*?\}\)\);/,
-  },
-  {
-    label: 'mysql tableCount return',
-    schemaCall: 'schemaDoc: buildDdl(columnRows, enumMap, foreignKeys)',
-  },
-];
-
-for (const slice of slices) {
-  const actual = slice.schemaCall
-    ? grabReturn(introspect, `${slice.label} package`, slice.schemaCall)
-    : grab(introspect, `${slice.label} package`, slice.pattern);
-  const expected = slice.schemaCall
-    ? grabReturn(service, `${slice.label} ai-bi`, slice.schemaCall)
-    : grab(service, `${slice.label} ai-bi`, slice.pattern);
-  assertEqual(slice.label, actual, expected);
-}
-
-const pgFn = grab(
-  introspect,
-  'buildPostgresSchemaDoc',
-  /export function buildPostgresSchemaDoc[\s\S]*?\n\}/,
-);
-const mysqlFn = grab(
-  introspect,
-  'buildMysqlSchemaDoc',
-  /export function buildMysqlSchemaDoc[\s\S]*?\n\}/,
-);
-
-function mustInclude(label, haystack, needle) {
-  if (!haystack.includes(needle)) {
-    console.error(`missing ${label}: ${needle}`);
-    process.exitCode = 1;
-  } else {
-    console.log(`ok ${label}`);
+  const diffs = [...wholeFileDiffs(), ...sliceDiffs()];
+  if (diffs.length > 0) {
+    console.error(`body diff failed against ${AI_BI_COMMIT}`);
+    for (const diff of diffs) {
+      console.error(`\n${diff}`);
+    }
+    process.exit(1);
   }
+  console.log(`ok: whole-file and introspect slices match ${AI_BI_COMMIT}`);
 }
-
-mustInclude('pg native enum mapper', pgFn, 'buildNativeEnumMap(rows, nativeEnumRows)');
-mustInclude('pg check enum mapper', pgFn, 'buildCheckEnumMap(checkRows)');
-mustInclude('pg fk mapper', pgFn, 'mapPgForeignKeyRows(foreignKeyRows)');
-mustInclude('mysql fk mapper', mysqlFn, 'mapMysqlForeignKeyRows(foreignKeyRows)');
-
-if (pgFn.includes('await this.fetch') || mysqlFn.includes('await this.fetch')) {
-  console.error('pure builders still call this.fetch*');
-  process.exitCode = 1;
-} else {
-  console.log('ok builders do not call this.fetch*');
-}
-
-if (process.exitCode) {
-  console.error('function body diff failed');
-  process.exit(process.exitCode);
-}
-console.log('function body diff empty');

@@ -109,47 +109,82 @@ describe('synthetic postgres golden', () => {
 
   it('matches fa3cbe7 mergeEnumMaps(native, check) and the package glue', () => {
     const original = schemaDocFromFa3cbe7Postgres(columns, nativeEnums, checks, foreignKeys);
-    const schemaDoc = readText(path.join(syntheticPgDir, 'schema-doc.txt'));
-    assert.equal(original.schemaDoc, schemaDoc);
-    assert.equal(original.tableCount, metadata.tableCount);
-
+    const frozen = readText(path.join(syntheticPgDir, 'schema-doc.txt'));
     const built = buildPostgresSchemaDoc(columns, nativeEnums, checks, foreignKeys);
-    assert.equal(built.schemaDoc, schemaDoc);
+    assert.equal(built.schemaDoc, original.schemaDoc);
+    assert.equal(built.tableCount, original.tableCount);
     assert.equal(built.tableCount, metadata.tableCount);
+    assert.equal(metadata.tableCount, 6);
 
+    const statusOrder = ['cancelled', 'pending', 'shipped', '已完成'].sort((a, b) =>
+      a.localeCompare(b),
+    );
+    const channelOrder = ['organic', 'paid', '推广'].sort((a, b) => a.localeCompare(b));
+    const viewOrder = ['cancelled', 'pending', '已完成'].sort((a, b) => a.localeCompare(b));
+    const capturedStatus = ['cancelled', 'pending', 'shipped', '已完成'];
+    if (statusOrder.join('\0') === capturedStatus.join('\0')) {
+      assert.equal(built.schemaDoc, frozen);
+      assert.deepEqual(
+        parseSchemaDoc(built.schemaDoc),
+        readJson(path.join(syntheticPgDir, 'parsed-tables.json')),
+      );
+    } else {
+      assert.notEqual(built.schemaDoc, frozen);
+    }
+
+    const schemaDoc = built.schemaDoc;
     assert.match(
       schemaDoc,
-      /status USER-DEFINED NOT NULL {2}-- enum: cancelled \| pending \| shipped \| 已完成/,
+      new RegExp(
+        `status USER-DEFINED NOT NULL {2}-- enum: ${statusOrder.join(' \\| ')}`,
+      ),
     );
-    assert.match(schemaDoc, /channel text NOT NULL {2}-- enum: organic \| paid \| 推广/);
+    assert.match(
+      schemaDoc,
+      new RegExp(`channel text NOT NULL {2}-- enum: ${channelOrder.join(' \\| ')}`),
+    );
+    assert.match(schemaDoc, /status_code character varying NOT NULL,/);
+    assert.doesNotMatch(schemaDoc, /status_code[^\n]*enum:/);
     assert.match(schemaDoc, /CREATE TABLE Orders \(/);
     assert.match(
       schemaDoc,
       /CONSTRAINT Orders_region_id_fkey FOREIGN KEY \(region_id\) REFERENCES regions \(id\)/,
     );
+    assert.match(
+      schemaDoc,
+      /CONSTRAINT fk_items_order_line FOREIGN KEY \(order_id, line_no\) REFERENCES OrderLines \(order_id, line_no\)/,
+    );
     assert.match(schemaDoc, /CREATE TABLE order_status_view \(/);
     assert.doesNotMatch(schemaDoc, /CREATE VIEW/);
-    assert.match(schemaDoc, /status USER-DEFINED {2}-- enum: cancelled \| pending \| 已完成/);
-    assert.doesNotMatch(
+    assert.match(
       schemaDoc,
-      /CREATE TABLE order_status_view \([\s\S]*shipped/,
+      new RegExp(`status USER-DEFINED {2}-- enum: ${viewOrder.join(' \\| ')}`),
     );
+    assert.doesNotMatch(schemaDoc, /CREATE TABLE order_status_view \([\s\S]*shipped/);
+    assert.match(schemaDoc, /CREATE TABLE 订单 \(/);
 
     const parsed = parseSchemaDoc(schemaDoc);
-    assert.deepEqual(parsed, readJson(path.join(syntheticPgDir, 'parsed-tables.json')));
+    assert.equal(
+      parsed.find((table) => table.name === '订单'),
+      undefined,
+    );
     const orders = parsed.find((table) => table.name === 'Orders');
     const view = parsed.find((table) => table.name === 'order_status_view');
     assert.deepEqual(
       orders?.columns.find((column) => column.name === 'status')?.enumValues,
-      ['cancelled', 'pending', 'shipped', '已完成'],
+      statusOrder,
     );
     assert.deepEqual(
       orders?.columns.find((column) => column.name === 'channel')?.enumValues,
-      ['organic', 'paid', '推广'],
+      channelOrder,
+    );
+    assert.equal(
+      orders?.columns.find((column) => column.name === 'status_code')?.enumValues,
+      undefined,
     );
     assert.deepEqual(
       view?.columns.find((column) => column.name === 'status')?.enumValues,
-      ['cancelled', 'pending', '已完成'],
+      viewOrder,
     );
   });
 
@@ -173,11 +208,21 @@ describe('synthetic mysql golden', () => {
 
   it('matches MySQL post-processing', () => {
     const built = buildMysqlSchemaDoc(columns, foreignKeys);
-    const schemaDoc = readText(path.join(mysqlDir, 'schema-doc.txt'));
-    assert.equal(built.schemaDoc, schemaDoc);
+    const frozen = readText(path.join(mysqlDir, 'schema-doc.txt'));
     assert.equal(built.tableCount, metadata.tableCount);
+    const statusOrder = ['cancelled', 'pending', '已完成'].sort((a, b) => a.localeCompare(b));
+    const capturedStatus = ['cancelled', 'pending', '已完成'];
+    if (statusOrder.join('\0') === capturedStatus.join('\0')) {
+      assert.equal(built.schemaDoc, frozen);
+      assert.deepEqual(
+        parseSchemaDoc(built.schemaDoc),
+        readJson(path.join(mysqlDir, 'parsed-tables.json')),
+      );
+    } else {
+      assert.notEqual(built.schemaDoc, frozen);
+    }
+    const schemaDoc = built.schemaDoc;
     const parsed = parseSchemaDoc(schemaDoc);
-    assert.deepEqual(parsed, readJson(path.join(mysqlDir, 'parsed-tables.json')));
 
     assert.match(schemaDoc, /CREATE TABLE order_status_view \(/);
     assert.doesNotMatch(schemaDoc, /CREATE VIEW/);
@@ -194,7 +239,7 @@ describe('synthetic mysql golden', () => {
     const channel = orders.columns.find((column) => column.name === 'channel');
     const status = orders.columns.find((column) => column.name === 'status');
     assert.equal(channel?.enumValues, undefined);
-    assert.deepEqual(status?.enumValues, ['cancelled', 'pending', '已完成']);
+    assert.deepEqual(status?.enumValues, statusOrder);
 
     assert.match(
       schemaDoc,

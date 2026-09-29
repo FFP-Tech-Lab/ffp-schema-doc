@@ -1,13 +1,18 @@
 -- Synthetic Postgres schema for ffp-schema-doc golden capture.
 -- No real user data. Not the ai-bi benchmark seed.
 --
--- Native enum (CJK label), CHECK enums, a view, a mixed-case table name,
--- and a foreign key in public (the frozen introspection SQL only reads public).
+-- Covers: native enum (CJK label), CHECK enum on text (the form
+-- parsePgCheckEnum accepts), CHECK enum on varchar (the form it rejects),
+-- composite foreign key, a view, mixed-case names, a CJK table name,
+-- and CJK enum values.
 --
--- channel is text, and chk_status casts the enum to text, so PostgreSQL 16
--- pg_get_constraintdef emits `= ANY (ARRAY[...])`. That is the form
--- parsePgCheckEnum accepts. A varchar CHECK is rewritten to
--- `ANY ((ARRAY[...])::text[])`, which that regex does not recognize.
+-- public only: the frozen introspection SQL reads public.
+--
+-- channel is text, so pg_get_constraintdef emits
+-- `= ANY (ARRAY['organic'::text, ...])`. parsePgCheckEnum matches that.
+-- status_code is varchar. PostgreSQL 16 prints
+-- `ANY ((ARRAY['a'::character varying, ...])::text[])`, and parsePgCheckEnum
+-- returns null for that text.
 
 CREATE TYPE order_status AS ENUM ('pending', '已完成', 'cancelled');
 
@@ -21,8 +26,30 @@ CREATE TABLE "Orders" (
   region_id integer REFERENCES regions (id),
   status order_status NOT NULL,
   channel text NOT NULL,
+  status_code character varying(16) NOT NULL,
   CONSTRAINT chk_status CHECK ((status)::text IN ('pending', '已完成', 'shipped')),
-  CONSTRAINT chk_channel CHECK (channel IN ('organic', 'paid', '推广'))
+  CONSTRAINT chk_channel CHECK (channel IN ('organic', 'paid', '推广')),
+  CONSTRAINT chk_status_code CHECK (status_code IN ('a', 'b'))
+);
+
+CREATE TABLE "OrderLines" (
+  order_id integer NOT NULL,
+  line_no integer NOT NULL,
+  PRIMARY KEY (order_id, line_no)
+);
+
+CREATE TABLE order_items (
+  order_id integer NOT NULL,
+  line_no integer NOT NULL,
+  qty integer NOT NULL,
+  PRIMARY KEY (order_id, line_no),
+  CONSTRAINT fk_items_order_line FOREIGN KEY (order_id, line_no)
+    REFERENCES "OrderLines" (order_id, line_no)
+);
+
+CREATE TABLE "订单" (
+  id integer PRIMARY KEY,
+  note text
 );
 
 CREATE VIEW order_status_view AS

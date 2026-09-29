@@ -1,5 +1,18 @@
 [
   {
+    "name": "OrderLines",
+    "columns": [
+      {
+        "name": "order_id",
+        "type": "integer"
+      },
+      {
+        "name": "line_no",
+        "type": "integer"
+      }
+    ]
+  },
+  {
     "name": "Orders",
     "columns": [
       {
@@ -28,6 +41,10 @@
           "paid",
           "推广"
         ]
+      },
+      {
+        "name": "status_code",
+        "type": "character"
       }
     ],
     "outgoingRelations": [
@@ -40,6 +57,38 @@
         "toTable": "regions",
         "toColumns": [
           "id"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "order_items",
+    "columns": [
+      {
+        "name": "order_id",
+        "type": "integer"
+      },
+      {
+        "name": "line_no",
+        "type": "integer"
+      },
+      {
+        "name": "qty",
+        "type": "integer"
+      }
+    ],
+    "outgoingRelations": [
+      {
+        "name": "fk_items_order_line",
+        "fromTable": "order_items",
+        "fromColumns": [
+          "order_id",
+          "line_no"
+        ],
+        "toTable": "OrderLines",
+        "toColumns": [
+          "order_id",
+          "line_no"
         ]
       }
     ]

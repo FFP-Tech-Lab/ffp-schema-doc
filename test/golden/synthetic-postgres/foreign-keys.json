@@ -6,5 +6,21 @@
     "to_table": "regions",
     "to_column": "id",
     "ordinal_position": 1
+  },
+  {
+    "constraint_name": "fk_items_order_line",
+    "from_table": "order_items",
+    "from_column": "order_id",
+    "to_table": "OrderLines",
+    "to_column": "order_id",
+    "ordinal_position": 1
+  },
+  {
+    "constraint_name": "fk_items_order_line",
+    "from_table": "order_items",
+    "from_column": "line_no",
+    "to_table": "OrderLines",
+    "to_column": "line_no",
+    "ordinal_position": 2
   }
 ]

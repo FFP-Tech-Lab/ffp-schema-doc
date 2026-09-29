@@ -1,36 +1,39 @@
-name: Publish npm
+name: Publish
 
-# Tag-gated publish of ffp-schema-doc. Does not run on pull requests.
-# Push tag vX.Y.Z matching package.json. Do not publish from a pull request.
 on:
   push:
     tags:
       - 'v*'
 
-permissions:
-  contents: read
-  id-token: write
-
 jobs:
-  publish:
+  test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+      - name: Require a stable tag reachable from main
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "refusing ${tag}: only vX.Y.Z is published. Prereleases are not routed to --tag next."
+            exit 1
+          fi
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 10.33.3
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org
 
       - name: Install
         run: pnpm install --frozen-lockfile
@@ -38,78 +41,142 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Test
+        run: pnpm test
+
       - name: Diff function bodies
         run: pnpm diff-bodies
 
-      - name: Test
-        run: pnpm test
+      - name: Prove MAX_ENUM_VALUES mutation fails the diff
+        run: pnpm diff-bodies:prove
 
       - name: Build
         run: pnpm build
 
-      - name: Tagged commit is reachable from main
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Require CI success for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git fetch origin main
-          if ! git merge-base --is-ancestor HEAD origin/main; then
-            echo "Tagged commit $(git rev-parse HEAD) is not reachable from origin/main." >&2
-            echo "Tag a commit that is already on main." >&2
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          runs="$(gh run list --commit "$GITHUB_SHA" --workflow ci.yml --json conclusion,status,databaseId,event,headSha,url --limit 50)"
+          echo "$runs"
+          node --input-type=module -e '
+            const runs = JSON.parse(process.argv[1]);
+            const ok = runs.some((run) => run.conclusion === "success" && run.headSha === process.env.GITHUB_SHA);
+            if (!ok) {
+              console.error("ci.yml has no successful run for " + process.env.GITHUB_SHA);
+              process.exit(1);
+            }
+            console.log("ci.yml succeeded for " + process.env.GITHUB_SHA);
+          ' "$runs"
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 10.33.3
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Install and build
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Compare this version if it is already published
+        id: published
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          set +e
+          npm view "ffp-schema-doc@${version}" version >view.out 2>view.err
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            if grep -qiE 'E404|404 Not Found' view.err; then
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              echo "ffp-schema-doc@${version} is not published"
+              exit 0
+            fi
+            echo "npm view failed for a reason other than a missing version" >&2
+            cat view.err >&2
+            exit 1
+          fi
+          remote_head="$(npm view "ffp-schema-doc@${version}" gitHead)"
+          remote_integrity="$(npm view "ffp-schema-doc@${version}" dist.integrity)"
+          local_integrity="$(npm pack --json --ignore-scripts | node --input-type=module -e '
+            let raw = "";
+            for await (const chunk of process.stdin) raw += chunk;
+            const parsed = JSON.parse(raw);
+            const item = Array.isArray(parsed) ? parsed[0] : parsed;
+            if (!item || typeof item.integrity !== "string") {
+              console.error("npm pack did not report an integrity");
+              process.exit(1);
+            }
+            process.stdout.write(item.integrity);
+          ')"
+          if [ "$remote_head" != "$GITHUB_SHA" ] || [ "$remote_integrity" != "$local_integrity" ]; then
+            echo "published ffp-schema-doc@${version} does not match this commit" >&2
+            echo "gitHead remote=${remote_head} local=${GITHUB_SHA}" >&2
+            echo "integrity remote=${remote_integrity} local=${local_integrity}" >&2
+            exit 1
+          fi
+          echo "ffp-schema-doc@${version} is already published from this commit with the same tarball integrity"
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+
+      - name: Detect whether the package exists
+        id: registry
+        if: steps.published.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          set +e
+          npm view ffp-schema-doc version >pkg.out 2>pkg.err
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "ffp-schema-doc already exists; publishing with OIDC trusted publishing"
+          elif grep -qiE 'E404|404 Not Found' pkg.err; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "ffp-schema-doc is not on the registry (first publish)"
+          else
+            echo "npm view ffp-schema-doc failed for a reason other than a missing package" >&2
+            cat pkg.err >&2
             exit 1
           fi
 
-      - name: Publish to npm
+      - name: Publish with OIDC trusted publishing
+        if: steps.published.outputs.skip != 'true' && steps.registry.outputs.exists == 'true'
+        run: |
+          set -euo pipefail
+          echo "publishing with OIDC trusted publishing; NPM_TOKEN is not used"
+          env -u NODE_AUTH_TOKEN npm publish --provenance --access public
+
+      - name: Publish the first version with NPM_TOKEN
+        if: steps.published.outputs.skip != 'true' && steps.registry.outputs.exists == 'false'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          NAME="$(node -p "require('./package.json').name")"
-          VERSION="$(node -p "require('./package.json').version")"
-          TAG="${GITHUB_REF_NAME}"
-          EXPECTED="v${VERSION}"
-          if [ "${TAG}" != "${EXPECTED}" ]; then
-            echo "Git tag '${TAG}' does not match package.json version '${VERSION}' (expected '${EXPECTED}')." >&2
-            exit 1
-          fi
-
-          set +e
-          VIEW_OUT="$(npm view "${NAME}@${VERSION}" version 2>&1)"
-          VIEW_STATUS=$?
-          set -e
-          if [ "${VIEW_STATUS}" -eq 0 ]; then
-            echo "Note: ${NAME}@${VERSION} is already on the registry; skipping publish (idempotent, no force republish)."
-            {
-              echo "## npm publish skipped"
-              echo ""
-              echo "\`${NAME}@${VERSION}\` is already on the registry."
-            } >> "${GITHUB_STEP_SUMMARY}"
-            exit 0
-          fi
-          if ! grep -qiE 'E404|404 Not Found|is not in this registry' <<<"${VIEW_OUT}"; then
-            echo "npm view ${NAME}@${VERSION} failed unexpectedly:" >&2
-            echo "${VIEW_OUT}" >&2
-            exit 1
-          fi
-
-          # 0.1.0 cannot use trusted publishing: npm will not attach a trusted
-          # publisher until the package exists. This attempt is expected to
-          # fail. The fallback authenticates with NPM_TOKEN and still passes
-          # --provenance. Node 22's bundled npm builds that attestation from
-          # the job OIDC token (id-token: write); the token is only the
-          # registry credential. OIDC login applies from the next version,
-          # after trusted publishing is configured on npm.
-          if env -u NODE_AUTH_TOKEN npm publish --provenance --access public; then
-            echo "Published ${NAME}@${VERSION} via npm trusted publishing (OIDC)"
-          else
-            echo "Trusted publishing failed; falling back to NPM_TOKEN" >&2
-            if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-              echo "NPM_TOKEN is not set and trusted publishing failed." >&2
-              exit 1
-            fi
-            npm publish --provenance --access public
-            echo "Published ${NAME}@${VERSION} via NPM_TOKEN"
-          fi
-          {
-            echo "## npm publish"
-            echo ""
-            echo "Published \`${NAME}@${VERSION}\` to https://www.npmjs.com/package/${NAME}"
-          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "OIDC trusted publishing is unavailable because ffp-schema-doc is not on the registry yet."
+          echo "::warning::OIDC trusted publishing is unavailable for the first publish of ffp-schema-doc. npm trusted publishers can be configured only after the package exists, so this step falls back to NPM_TOKEN. After 0.1.0, configure trusted publishing and remove this fallback."
+          test -n "${NODE_AUTH_TOKEN}"
+          npm publish --provenance --access public

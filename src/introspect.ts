@@ -96,7 +96,8 @@ export function buildPostgresSchemaDoc(
  * Turn MySQL introspection rows into schemaDoc.
  *
  * Callers keep the two SQL strings (columns, foreign keys) and pass the raw
- * rows here. Foreign-key rows are mapped internally. A mechanical swap in
+ * rows here. ai-bi casts the driver rows to MysqlColumnQueryRow[] before
+ * calling. Foreign-key rows are mapped internally. A mechanical swap in
  * ai-bi replaces the post-processing in `extractMysqlSchema` with:
  *
  * ```ts
@@ -104,7 +105,7 @@ export function buildPostgresSchemaDoc(
  * ```
  */
 export function buildMysqlSchemaDoc(
-  rows: unknown,
+  rows: MysqlColumnQueryRow[],
   foreignKeyRows: MysqlForeignKeyQueryRow[],
 ): SchemaDocResult {
   const typedRows = rows as Array<{

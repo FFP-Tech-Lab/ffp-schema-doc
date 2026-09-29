@@ -1,5 +1,19 @@
 [
   {
+    "table_name": "OrderLines",
+    "column_name": "order_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "OrderLines",
+    "column_name": "line_no",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
     "table_name": "Orders",
     "column_name": "id",
     "data_type": "integer",
@@ -28,6 +42,34 @@
     "udt_name": "text"
   },
   {
+    "table_name": "Orders",
+    "column_name": "status_code",
+    "data_type": "character varying",
+    "is_nullable": "NO",
+    "udt_name": "varchar"
+  },
+  {
+    "table_name": "order_items",
+    "column_name": "order_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "order_items",
+    "column_name": "line_no",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "order_items",
+    "column_name": "qty",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
     "table_name": "order_status_view",
     "column_name": "id",
     "data_type": "integer",
@@ -53,6 +95,20 @@
     "column_name": "name",
     "data_type": "text",
     "is_nullable": "NO",
+    "udt_name": "text"
+  },
+  {
+    "table_name": "订单",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "订单",
+    "column_name": "note",
+    "data_type": "text",
+    "is_nullable": "YES",
     "udt_name": "text"
   }
 ]

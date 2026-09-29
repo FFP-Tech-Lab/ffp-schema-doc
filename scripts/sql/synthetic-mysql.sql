@@ -3,11 +3,11 @@
 -- Features: native ENUM (including CJK values), CHECK-based enum,
 -- composite foreign key, a view, mixed-case identifiers, a CJK table name.
 
-CREATE DATABASE IF NOT EXISTS synthetic_schema_doc
+CREATE DATABASE IF NOT EXISTS ffp_schema_doc_capture_mysql
   CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
 
-USE synthetic_schema_doc;
+USE ffp_schema_doc_capture_mysql;
 
 CREATE TABLE regions (
   id INT NOT NULL,

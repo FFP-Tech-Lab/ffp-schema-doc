@@ -18,6 +18,9 @@
  *   sudo mysql --socket=/var/run/mysqld/mysqld.sock
  * Override with SCHEMA_DOC_PSQL / SCHEMA_DOC_MYSQL (a command prefix).
  *
+ * Throwaway databases are only ffp_schema_doc_capture, ffp_schema_doc_capture_pg,
+ * and ffp_schema_doc_capture_mysql. The script refuses to DROP any other name.
+ *
  * This script does not embed connection strings. It is not part of CI.
  */
 import { execFileSync } from 'node:child_process';
@@ -135,17 +138,47 @@ function writeJson(file: string, value: unknown): void {
   writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function capturePostgres(): void {
-  psql('postgres', `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'benchmark_bi' AND pid <> pg_backend_pid();`);
-  psql('postgres', 'DROP DATABASE IF EXISTS benchmark_bi;');
-  psql('postgres', 'CREATE DATABASE benchmark_bi;');
-  psqlFile('benchmark_bi', path.join(root, 'scripts/seed/01-schema.sql'));
-  psqlFile('benchmark_bi', path.join(root, 'scripts/seed/02-data.sql'));
+/**
+ * Names this script is allowed to DROP. All of them are disposable capture
+ * databases. benchmark_bi is intentionally absent.
+ */
+const DISPOSABLE_DATABASES = new Set([
+  'ffp_schema_doc_capture',
+  'ffp_schema_doc_capture_pg',
+  'ffp_schema_doc_capture_mysql',
+]);
 
-  const columns = psqlJson<PgColumnQueryRow>('benchmark_bi', sql['pg.columns']);
-  const nativeEnums = psqlJson<PgNativeEnumQueryRow>('benchmark_bi', sql['pg.nativeEnums']);
-  const checks = psqlJson<PgCheckQueryRow>('benchmark_bi', sql['pg.checks']);
-  const foreignKeys = psqlJson<PgForeignKeyQueryRow>('benchmark_bi', sql['pg.foreignKeys']);
+function assertDisposableDatabase(name: string): void {
+  if (!DISPOSABLE_DATABASES.has(name) || !name.startsWith('ffp_schema_doc_capture')) {
+    throw new Error(`refusing to drop database ${name}`);
+  }
+}
+
+function recreatePostgresDatabase(name: string): void {
+  assertDisposableDatabase(name);
+  psql(
+    'postgres',
+    `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${name}' AND pid <> pg_backend_pid();`,
+  );
+  psql('postgres', `DROP DATABASE IF EXISTS ${name};`);
+  psql('postgres', `CREATE DATABASE ${name};`);
+}
+
+function dropMysqlDatabase(name: string): void {
+  assertDisposableDatabase(name);
+  mysql(`DROP DATABASE IF EXISTS ${name};`);
+}
+
+function capturePostgres(): void {
+  const database = 'ffp_schema_doc_capture';
+  recreatePostgresDatabase(database);
+  psqlFile(database, path.join(root, 'scripts/seed/01-schema.sql'));
+  psqlFile(database, path.join(root, 'scripts/seed/02-data.sql'));
+
+  const columns = psqlJson<PgColumnQueryRow>(database, sql['pg.columns']);
+  const nativeEnums = psqlJson<PgNativeEnumQueryRow>(database, sql['pg.nativeEnums']);
+  const checks = psqlJson<PgCheckQueryRow>(database, sql['pg.checks']);
+  const foreignKeys = psqlJson<PgForeignKeyQueryRow>(database, sql['pg.foreignKeys']);
 
   const typedRows: SchemaColumnRow[] = columns.map((row) => ({
     table_name: row.table_name,
@@ -158,7 +191,7 @@ function capturePostgres(): void {
     mergeEnumMaps(buildNativeEnumMap(columns, nativeEnums), buildCheckEnumMap(checks)),
   );
   const withForeignKeys = buildPostgresSchemaDoc(columns, nativeEnums, checks, foreignKeys);
-  const version = psql('benchmark_bi', 'SHOW server_version;').trim();
+  const version = psql(database, 'SHOW server_version;').trim();
 
   const dir = path.join(root, 'test/golden/benchmark-postgres');
   mkdirSync(dir, { recursive: true });
@@ -180,7 +213,7 @@ function capturePostgres(): void {
     sourceCommit: AI_BI_COMMIT,
     capture: 'db-captured',
     engine: `PostgreSQL ${version}`,
-    database: 'benchmark_bi',
+    database,
     seed: ['scripts/seed/01-schema.sql', 'scripts/seed/02-data.sql'],
     schemaDoc: 'benchmark/scripts/setup.ts calls buildDdl with no foreign keys',
     schemaDocWithForeignKeys: 'DataSourceService.extractPostgresSchema post-processing, including foreign keys',
@@ -190,8 +223,8 @@ function capturePostgres(): void {
 }
 
 function captureMysql(): void {
-  const database = 'synthetic_schema_doc';
-  mysql(`DROP DATABASE IF EXISTS ${database};`);
+  const database = 'ffp_schema_doc_capture_mysql';
+  dropMysqlDatabase(database);
   const createSql = readFileSync(path.join(root, 'scripts/sql/synthetic-mysql.sql'), 'utf8');
   mysql(createSql);
 
@@ -235,19 +268,14 @@ function captureMysql(): void {
       'CJK table name',
     ],
     tableCount: built.tableCount,
-    note: 'CHECK (channel IN ...) is present in the database. The MySQL post-processing only reads native ENUM column types, so channel has no enum comment. The view is returned by INFORMATION_SCHEMA.COLUMNS and emitted as CREATE TABLE. The CJK table name is in schemaDoc and dropped by parseSchemaDoc.',
+    note: 'CHECK (channel IN ...) is present in the database. The MySQL post-processing only reads native ENUM column types, so channel has no enum comment. The view is returned by INFORMATION_SCHEMA.COLUMNS and emitted as CREATE TABLE. The CJK table name is in schemaDoc and dropped by parseSchemaDoc. Rows are mysql JSON_OBJECT output, not mysql2 driver values.',
     introspectionSqlSha256: sqlSha256,
   });
 }
 
 function captureSyntheticPostgres(): void {
-  const database = 'synthetic_pg_schema_doc';
-  psql(
-    'postgres',
-    `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${database}' AND pid <> pg_backend_pid();`,
-  );
-  psql('postgres', `DROP DATABASE IF EXISTS ${database};`);
-  psql('postgres', `CREATE DATABASE ${database};`);
+  const database = 'ffp_schema_doc_capture_pg';
+  recreatePostgresDatabase(database);
   psqlFile(database, path.join(root, 'scripts/sql/synthetic-postgres.sql'));
 
   const columns = psqlJson<PgColumnQueryRow>(database, sql['pg.columns']);
@@ -280,13 +308,15 @@ function captureSyntheticPostgres(): void {
     features: [
       'native enum',
       'CHECK-based enum',
-      'foreign key',
+      'varchar CHECK enum that parsePgCheckEnum rejects',
+      'composite foreign key',
       'view',
       'mixed-case names',
+      'CJK table name',
       'CJK enum values',
     ],
     tableCount: built.tableCount,
-    note: 'status is a native enum and also has a CHECK, so mergeEnumMaps unions them (shipped comes only from the CHECK; cancelled comes only from the enum). channel is text so pg_get_constraintdef stays in the ANY (ARRAY[...]) form parsePgCheckEnum accepts. The view is emitted as CREATE TABLE and does not inherit the table CHECK, so its status comment is native labels only.',
+    note: 'status is a native enum and also has a CHECK, so mergeEnumMaps unions them (shipped comes only from the CHECK; cancelled comes only from the enum). channel is text so pg_get_constraintdef stays in the ANY (ARRAY[...]::text) form parsePgCheckEnum accepts. status_code is varchar; its CHECK text uses ::character varying inside ANY ((ARRAY[...])::text[]) and parsePgCheckEnum returns null, so status_code has no enum comment. The view is emitted as CREATE TABLE and does not inherit the table CHECK, so its status comment is native labels only. The CJK table name is in schemaDoc and dropped by parseSchemaDoc. Rows are psql json_agg output, not node-pg driver values.',
     introspectionSqlSha256: sqlSha256,
   });
 }

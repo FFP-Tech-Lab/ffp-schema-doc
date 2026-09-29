@@ -6,5 +6,9 @@
   {
     "table_name": "\"Orders\"",
     "check_def": "CHECK ((channel = ANY (ARRAY['organic'::text, 'paid'::text, '推广'::text])))"
+  },
+  {
+    "table_name": "\"Orders\"",
+    "check_def": "CHECK (((status_code)::text = ANY ((ARRAY['a'::character varying, 'b'::character varying])::text[])))"
   }
 ]

@@ -45,6 +45,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test test/**/*.test.ts",
     "diff-bodies": "node scripts/diff-function-bodies.mjs",
+    "diff-bodies:prove": "node scripts/diff-function-bodies.mjs --prove-mutation-fails",
     "capture-golden": "tsx scripts/capture-golden.ts",
     "prepack": "pnpm build"
   },
