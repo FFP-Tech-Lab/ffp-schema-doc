@@ -14,11 +14,7 @@
     "rootDir": ".",
     "outDir": "dist",
     "types": ["node"],
-    "noEmit": true,
-    "baseUrl": ".",
-    "paths": {
-      "@ai-bi/shared": ["test/reference/ai-bi/packages/shared/src/schema-enum.ts"]
-    }
+    "noEmit": true
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["test/reference"]

@@ -1,4 +1,4 @@
-import type { SchemaForeignKeyRow } from '@ai-bi/shared';
+import type { SchemaForeignKeyRow } from './schema-enum';
 
 export type PgForeignKeyQueryRow = {
   constraint_name: string;

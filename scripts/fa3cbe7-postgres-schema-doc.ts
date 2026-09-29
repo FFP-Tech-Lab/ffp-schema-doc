@@ -1,5 +1,5 @@
 /**
- * schemaDoc from the fa3cbe7 DataSourceService.extractPostgresSchema path.
+ * schemaDoc from the fa3cbe7 Postgres post-processing path in datasource.service.ts.
  *
  * Imports the committed reference copies only. Does not call
  * buildPostgresSchemaDoc or anything under src/.
@@ -16,11 +16,11 @@ import {
   buildNativeEnumMap,
   mergeEnumMaps,
   type SchemaColumnRow,
-} from '../test/reference/ai-bi/packages/shared/src/schema-enum';
+} from '../test/reference/fa3cbe7/schema-enum';
 import {
   mapPgForeignKeyRows,
   type PgForeignKeyQueryRow,
-} from '../test/reference/ai-bi/apps/api/src/datasource/schema-fk';
+} from '../test/reference/fa3cbe7/schema-fk';
 
 export type Fa3cbe7PgColumnRow = {
   table_name: string;

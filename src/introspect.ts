@@ -61,12 +61,6 @@ export type SchemaDocResult = {
  *
  * Callers keep the four SQL strings (columns, native enums, checks, foreign
  * keys) and pass the raw rows here. Foreign-key rows are mapped internally.
- * A mechanical swap in ai-bi replaces the post-processing in
- * `extractPostgresSchema` with:
- *
- * ```ts
- * return buildPostgresSchemaDoc(rows, nativeEnumRows, checkRows, foreignKeyRows);
- * ```
  */
 export function buildPostgresSchemaDoc(
   rows: PgColumnQueryRow[],
@@ -95,14 +89,9 @@ export function buildPostgresSchemaDoc(
 /**
  * Turn MySQL introspection rows into schemaDoc.
  *
- * Callers keep the two SQL strings (columns, foreign keys) and pass the raw
- * rows here. ai-bi casts the driver rows to MysqlColumnQueryRow[] before
- * calling. Foreign-key rows are mapped internally. A mechanical swap in
- * ai-bi replaces the post-processing in `extractMysqlSchema` with:
- *
- * ```ts
- * return buildMysqlSchemaDoc(rows, foreignKeyRows);
- * ```
+ * Callers keep the two SQL strings (columns, foreign keys) and pass rows
+ * already typed as MysqlColumnQueryRow[]. Foreign-key rows are mapped
+ * internally.
  */
 export function buildMysqlSchemaDoc(
   rows: MysqlColumnQueryRow[],

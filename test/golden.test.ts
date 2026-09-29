@@ -32,11 +32,11 @@ function readText(file: string): string {
   return readFileSync(file, 'utf8').replace(/\n$/, '');
 }
 
-const pgDir = path.join('test', 'golden', 'benchmark-postgres');
+const pgDir = path.join('test', 'golden', 'sample-postgres');
 const syntheticPgDir = path.join('test', 'golden', 'synthetic-postgres');
 const mysqlDir = path.join('test', 'golden', 'synthetic-mysql');
 
-describe('benchmark postgres golden', () => {
+describe('sample postgres golden', () => {
   const columns = readJson<PgColumnQueryRow[]>(path.join(pgDir, 'columns.json'));
   const nativeEnums = readJson<PgNativeEnumQueryRow[]>(path.join(pgDir, 'native-enums.json'));
   const checks = readJson<PgCheckQueryRow[]>(path.join(pgDir, 'checks.json'));
@@ -47,11 +47,11 @@ describe('benchmark postgres golden', () => {
     tableCount: number;
   }>(path.join(pgDir, 'metadata.json'));
 
-  it('was captured from the benchmark seed database', () => {
+  it('was captured from the sample schema database', () => {
     assert.equal(metadata.capture, 'db-captured');
   });
 
-  it('matches setup.ts buildDdl with no foreign keys', () => {
+  it('matches buildDdl with no foreign keys', () => {
     const typedRows: SchemaColumnRow[] = columns.map((row) => ({
       table_name: row.table_name,
       column_name: row.column_name,
@@ -67,7 +67,7 @@ describe('benchmark postgres golden', () => {
     assert.deepEqual(parseSchemaDoc(schemaDoc), readJson(path.join(pgDir, 'parsed-tables.json')));
   });
 
-  it('matches DataSourceService post-processing including foreign keys', () => {
+  it('matches frozen Postgres post-processing including foreign keys', () => {
     const built = buildPostgresSchemaDoc(columns, nativeEnums, checks, foreignKeys);
     assert.equal(built.schemaDoc, readText(path.join(pgDir, 'schema-doc-with-fks.txt')));
     assert.equal(built.tableCount, metadata.tableCount);
@@ -102,8 +102,8 @@ describe('synthetic postgres golden', () => {
     assert.ok(checks.length > 0);
     assert.ok(foreignKeys.length > 0);
     const composer = readFileSync('scripts/fa3cbe7-postgres-schema-doc.ts', 'utf8');
-    assert.match(composer, /test\/reference\/ai-bi\/packages\/shared\/src\/schema-enum/);
-    assert.match(composer, /test\/reference\/ai-bi\/apps\/api\/src\/datasource\/schema-fk/);
+    assert.match(composer, /test\/reference\/fa3cbe7\/schema-enum/);
+    assert.match(composer, /test\/reference\/fa3cbe7\/schema-fk/);
     assert.doesNotMatch(composer, /from ['"]\.\.\/src\//);
   });
 

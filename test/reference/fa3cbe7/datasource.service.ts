@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { Client as PgClient } from 'pg';
 import * as mysql from 'mysql2/promise';
-import type { DataSource } from '@ai-bi/db';
+import type { DataSource } from 'datasource-db';
 import {
   buildCheckEnumMap,
   buildDdl,
@@ -17,7 +17,7 @@ import {
   type EnumValueMap,
   type SchemaColumnRow,
   type SchemaForeignKeyRow,
-} from '@ai-bi/shared';
+} from 'schema-doc-shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { CryptoService } from '../common/crypto.service';
 import { CreateDataSourceDto, UpdateDataSourceDto } from './datasource.dto';

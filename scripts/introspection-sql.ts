@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 
-/** ai-bi commit the SQL strings and function bodies were copied from. */
-export const AI_BI_COMMIT = 'fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2';
+/** Commit the frozen reference snapshot was copied from. */
+export const REFERENCE_COMMIT = 'fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2';
 
 export const INTROSPECTION_SQL_KEYS = [
   'pg.columns',
@@ -20,11 +20,7 @@ export type IntrospectionSqlKey = (typeof INTROSPECTION_SQL_KEYS)[number];
 const REFERENCE_SQL_FILE = path.join(
   'test',
   'reference',
-  'ai-bi',
-  'apps',
-  'api',
-  'src',
-  'datasource',
+  'fa3cbe7',
   'datasource.service.ts',
 );
 

@@ -65,6 +65,9 @@ jobs:
       - name: Prove MAX_ENUM_VALUES mutation fails the diff
         run: pnpm diff-bodies:prove
 
+      - name: Reject extracted-project names
+        run: pnpm check-standalone
+
       - name: Build
         run: pnpm build
 

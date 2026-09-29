@@ -1,5 +1,4 @@
 {
-  "sourceRepo": "https://github.com/ChuTingzj/ai-bi",
   "sourceCommit": "fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2",
   "capture": "db-captured",
   "engine": "PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)",
@@ -8,8 +7,8 @@
     "scripts/seed/01-schema.sql",
     "scripts/seed/02-data.sql"
   ],
-  "schemaDoc": "benchmark/scripts/setup.ts calls buildDdl with no foreign keys",
-  "schemaDocWithForeignKeys": "DataSourceService.extractPostgresSchema post-processing, including foreign keys",
+  "schemaDoc": "buildDdl with no foreign keys",
+  "schemaDocWithForeignKeys": "Postgres post-processing in the frozen datasource.service.ts snapshot, including foreign keys",
   "tableCount": 6,
   "introspectionSqlSha256": {
     "pg.columns": "76c459314096227f0d7c0892c1f59045928c5410537f13963850a9753578bb90",

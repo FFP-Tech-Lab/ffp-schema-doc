@@ -1,5 +1,5 @@
 -- Synthetic Postgres schema for ffp-schema-doc golden capture.
--- No real user data. Not the ai-bi benchmark seed.
+-- No real user data. Separate from the sample schema under scripts/seed.
 --
 -- Covers: native enum (CJK label), CHECK enum on text (the form
 -- parsePgCheckEnum accepts), CHECK enum on varchar (the form it rejects),

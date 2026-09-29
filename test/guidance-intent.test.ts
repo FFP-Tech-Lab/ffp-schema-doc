@@ -5,16 +5,13 @@ import { parseSchemaDoc } from '../src/schema-parse';
 import type { SchemaTableMeta } from '../src/guidance-types';
 
 /**
- * ai-bi exports `isGuidanceMessageIntent` from
- * `packages/shared/src/guidance-types.ts` (fa3cbe7). It is not part of this
- * package: parse only needs the table/column/relation meta types.
- *
- * The guard is not a field-by-field check. Its body is:
+ * This package ships the table, column, and relation meta types only.
+ * A caller may still guard a message with `kind === 'guidance'`:
  *
  *   return !!value && typeof value === 'object'
  *     && (value as GuidanceMessageIntent).kind === 'guidance';
  *
- * This test applies that same kind check, then compares `tables` to
+ * This test applies that kind check, then compares `tables` to
  * `parseSchemaDoc` field by field.
  */
 type GuidanceIntentFixture = {
@@ -40,7 +37,7 @@ describe('GuidanceMessageIntent.tables fixture', () => {
     readFileSync('test/fixtures/guidance-intent.json', 'utf8'),
   ) as GuidanceIntentFixture;
 
-  it('accepts the synthetic intent with the ai-bi kind check', () => {
+  it('accepts the synthetic intent when kind is guidance', () => {
     assert.equal(kindIsGuidance(fixture.intent), true);
     assert.equal(kindIsGuidance({ kind: 'query' }), false);
     assert.equal(kindIsGuidance(null), false);

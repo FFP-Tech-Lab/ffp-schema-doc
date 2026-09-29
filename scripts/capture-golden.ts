@@ -1,10 +1,9 @@
 /**
  * Capture golden introspection rows from local Postgres and MySQL.
  *
- * Postgres: the ai-bi benchmark seed (scripts/seed), loaded the same way as
- * `pnpm benchmark:db:seed`. schemaDoc follows benchmark/scripts/setup.ts,
- * which calls buildDdl with no foreign keys. schemaDocWithForeignKeys follows
- * DataSourceService.extractPostgresSchema.
+ * Postgres sample schema: scripts/seed, schema then data. schemaDoc is
+ * buildDdl with no foreign keys. schemaDocWithForeignKeys follows the
+ * Postgres post-processing in the frozen datasource.service.ts snapshot.
  *
  * MySQL: scripts/sql/synthetic-mysql.sql (native enum, CHECK enum, composite
  * FK, view, mixed-case names, CJK enum values, CJK table name).
@@ -45,7 +44,7 @@ import type {
 import type { PgForeignKeyQueryRow } from '../src/schema-fk';
 import { schemaDocFromFa3cbe7Postgres } from './fa3cbe7-postgres-schema-doc';
 import {
-  AI_BI_COMMIT,
+  REFERENCE_COMMIT,
   introspectionSqlSha256,
   loadIntrospectionSql,
 } from './introspection-sql';
@@ -140,7 +139,7 @@ function writeJson(file: string, value: unknown): void {
 
 /**
  * Names this script is allowed to DROP. All of them are disposable capture
- * databases. benchmark_bi is intentionally absent.
+ * databases. Any other name is refused.
  */
 const DISPOSABLE_DATABASES = new Set([
   'ffp_schema_doc_capture',
@@ -193,7 +192,7 @@ function capturePostgres(): void {
   const withForeignKeys = buildPostgresSchemaDoc(columns, nativeEnums, checks, foreignKeys);
   const version = psql(database, 'SHOW server_version;').trim();
 
-  const dir = path.join(root, 'test/golden/benchmark-postgres');
+  const dir = path.join(root, 'test/golden/sample-postgres');
   mkdirSync(dir, { recursive: true });
   writeJson(path.join(dir, 'columns.json'), columns);
   writeJson(path.join(dir, 'native-enums.json'), nativeEnums);
@@ -209,14 +208,13 @@ function capturePostgres(): void {
   writeJson(path.join(dir, 'parsed-tables.json'), parseSchemaDoc(schemaDoc));
   writeJson(path.join(dir, 'parsed-tables-with-fks.json'), parseSchemaDoc(withForeignKeys.schemaDoc));
   writeJson(path.join(dir, 'metadata.json'), {
-    sourceRepo: 'https://github.com/ChuTingzj/ai-bi',
-    sourceCommit: AI_BI_COMMIT,
+    sourceCommit: REFERENCE_COMMIT,
     capture: 'db-captured',
     engine: `PostgreSQL ${version}`,
     database,
     seed: ['scripts/seed/01-schema.sql', 'scripts/seed/02-data.sql'],
-    schemaDoc: 'benchmark/scripts/setup.ts calls buildDdl with no foreign keys',
-    schemaDocWithForeignKeys: 'DataSourceService.extractPostgresSchema post-processing, including foreign keys',
+    schemaDoc: 'buildDdl with no foreign keys',
+    schemaDocWithForeignKeys: 'Postgres post-processing in the frozen datasource.service.ts snapshot, including foreign keys',
     tableCount: withForeignKeys.tableCount,
     introspectionSqlSha256: sqlSha256,
   });
@@ -252,8 +250,7 @@ function captureMysql(): void {
   );
   writeJson(path.join(dir, 'parsed-tables.json'), parseSchemaDoc(built.schemaDoc));
   writeJson(path.join(dir, 'metadata.json'), {
-    sourceRepo: 'https://github.com/ChuTingzj/ai-bi',
-    sourceCommit: AI_BI_COMMIT,
+    sourceCommit: REFERENCE_COMMIT,
     capture: 'db-captured',
     engine: `MySQL ${version}`,
     database,
@@ -297,14 +294,13 @@ function captureSyntheticPostgres(): void {
   );
   writeJson(path.join(dir, 'parsed-tables.json'), parseSchemaDoc(built.schemaDoc));
   writeJson(path.join(dir, 'metadata.json'), {
-    sourceRepo: 'https://github.com/ChuTingzj/ai-bi',
-    sourceCommit: AI_BI_COMMIT,
+    sourceCommit: REFERENCE_COMMIT,
     capture: 'db-captured',
     engine: `PostgreSQL ${version}`,
     database,
     creationScript: 'scripts/sql/synthetic-postgres.sql',
     schemaDocGeneratedBy:
-      'fa3cbe7 reference copies (test/reference/ai-bi) composed as DataSourceService.extractPostgresSchema: buildNativeEnumMap, buildCheckEnumMap, mergeEnumMaps(native, check), mapPgForeignKeyRows, buildDdl. Not buildPostgresSchemaDoc.',
+      'fa3cbe7 reference copies (test/reference/fa3cbe7) composed as the frozen Postgres post-processing: buildNativeEnumMap, buildCheckEnumMap, mergeEnumMaps(native, check), mapPgForeignKeyRows, buildDdl. Not buildPostgresSchemaDoc.',
     features: [
       'native enum',
       'CHECK-based enum',

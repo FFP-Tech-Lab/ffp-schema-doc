@@ -1,11 +1,10 @@
 {
-  "sourceRepo": "https://github.com/ChuTingzj/ai-bi",
   "sourceCommit": "fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2",
   "capture": "db-captured",
   "engine": "PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)",
   "database": "ffp_schema_doc_capture_pg",
   "creationScript": "scripts/sql/synthetic-postgres.sql",
-  "schemaDocGeneratedBy": "fa3cbe7 reference copies (test/reference/ai-bi) composed as DataSourceService.extractPostgresSchema: buildNativeEnumMap, buildCheckEnumMap, mergeEnumMaps(native, check), mapPgForeignKeyRows, buildDdl. Not buildPostgresSchemaDoc.",
+  "schemaDocGeneratedBy": "fa3cbe7 reference copies (test/reference/fa3cbe7) composed as the frozen Postgres post-processing: buildNativeEnumMap, buildCheckEnumMap, mergeEnumMaps(native, check), mapPgForeignKeyRows, buildDdl. Not buildPostgresSchemaDoc.",
   "features": [
     "native enum",
     "CHECK-based enum",

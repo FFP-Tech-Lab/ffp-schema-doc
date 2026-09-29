@@ -1,4 +1,4 @@
--- Benchmark ecommerce schema for AI-BI Agent evaluation
+-- Sample ecommerce schema for local golden capture. Synthetic data only.
 
 CREATE TABLE IF NOT EXISTS regions (
   id SERIAL PRIMARY KEY,

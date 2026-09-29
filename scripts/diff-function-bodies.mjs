@@ -1,15 +1,23 @@
 /**
- * Whole-file equality against the ai-bi sources frozen at AI_BI_COMMIT
- * under test/reference/. Offline: it does not fetch GitHub.
+ * Whole-file equality against the frozen reference snapshot of the original
+ * implementation (commit fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2) under
+ * test/reference/fa3cbe7/. Offline: it does not fetch a remote.
  *
  * schema-enum.ts, schema-parse.ts, and schema-fk.ts are compared in full
  * after normalizing import specifiers (`from '...'` -> `from 'NORMALIZED'`).
- * A change to MAX_ENUM_VALUES, a type, a regex, or a new declaration fails.
+ * That normalization is the only allowance for the schema-fk.ts specifier,
+ * which in the snapshot is a relative `./schema-enum` import. A change to
+ * MAX_ENUM_VALUES, a type, a regex, or a new declaration fails.
  *
  * introspect.ts is new. Its function bodies are compared to explicit
  * 1-indexed line ranges of datasource.service.ts:
- *   buildPostgresSchemaDoc <- lines 230-245 (extractPostgresSchema)
- *   buildMysqlSchemaDoc    <- lines 341-369 (extractMysqlSchema)
+ *   buildPostgresSchemaDoc <- lines 230-245
+ *   buildMysqlSchemaDoc    <- lines 341-369
+ *
+ * datasource.service.ts is not compared as a whole file. Its two package
+ * import specifiers were rewritten to the neutral module names
+ * `datasource-db` and `schema-doc-shared`. Those lines sit outside the
+ * ranges above. The query text is unchanged.
  *
  * Normalization for those slices, and nothing else:
  *   1. Dedent (strip the shared leading indent).
@@ -32,25 +40,25 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 
-const AI_BI_COMMIT = 'fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2';
+const REFERENCE_COMMIT = 'fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2';
 const root = process.cwd();
 
 const FILE_PAIRS = [
   {
     pkg: 'src/schema-enum.ts',
-    ref: 'test/reference/ai-bi/packages/shared/src/schema-enum.ts',
+    ref: 'test/reference/fa3cbe7/schema-enum.ts',
   },
   {
     pkg: 'src/schema-parse.ts',
-    ref: 'test/reference/ai-bi/packages/shared/src/schema-parse.ts',
+    ref: 'test/reference/fa3cbe7/schema-parse.ts',
   },
   {
     pkg: 'src/schema-fk.ts',
-    ref: 'test/reference/ai-bi/apps/api/src/datasource/schema-fk.ts',
+    ref: 'test/reference/fa3cbe7/schema-fk.ts',
   },
 ];
 
-const DATASOURCE = 'test/reference/ai-bi/apps/api/src/datasource/datasource.service.ts';
+const DATASOURCE = 'test/reference/fa3cbe7/datasource.service.ts';
 
 const SLICES = [
   {
@@ -221,7 +229,7 @@ function proveMutationFails() {
     process.exit(1);
   }
   console.log(
-    `ok: MAX_ENUM_VALUES 50 -> 51 fails whole-file equality against ${pair.ref} (${AI_BI_COMMIT})`,
+    `ok: MAX_ENUM_VALUES 50 -> 51 fails whole-file equality against ${pair.ref} (${REFERENCE_COMMIT})`,
   );
 }
 
@@ -230,11 +238,11 @@ if (process.argv.includes('--prove-mutation-fails')) {
 } else {
   const diffs = [...wholeFileDiffs(), ...sliceDiffs()];
   if (diffs.length > 0) {
-    console.error(`body diff failed against ${AI_BI_COMMIT}`);
+    console.error(`body diff failed against ${REFERENCE_COMMIT}`);
     for (const diff of diffs) {
       console.error(`\n${diff}`);
     }
     process.exit(1);
   }
-  console.log(`ok: whole-file and introspect slices match ${AI_BI_COMMIT}`);
+  console.log(`ok: whole-file and introspect slices match ${REFERENCE_COMMIT}`);
 }

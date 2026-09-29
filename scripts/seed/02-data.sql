@@ -1,4 +1,4 @@
--- Benchmark seed data (~10k orders, manageable for local dev)
+-- Sample schema data (~10k orders, manageable for local dev)
 
 TRUNCATE daily_metrics, order_items, orders, products, users, regions RESTART IDENTITY CASCADE;
 
