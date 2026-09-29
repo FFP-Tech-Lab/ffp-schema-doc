@@ -59,11 +59,17 @@
  *   - changing reference schema-enum.ts bytes without updating the sha256 pin
  *   - redirecting the schema-fk.ts import (normalizeImports hides it; the
  *     pinned import line does not)
+ *   - removing hashProblems() or importProblems() from collectGateDiffs,
+ *     which is the function the default (non-prove) path calls
  * It does not write those edits to disk.
+ *
+ * src/guidance-types.ts and the export list in src/index.ts are not compared.
+ * Extra exports in src/introspect.ts, outside the two function bodies, pass.
  */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 const REFERENCE_COMMIT = 'fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2';
@@ -290,6 +296,56 @@ function importProblems(overrides = {}) {
   return problems;
 }
 
+const GATE_PIN_CALLS = ['hashProblems()', 'importProblems()'];
+
+function collectGateDiffs() {
+  return [
+    ...wholeFileDiffs(),
+    ...sliceDiffs(),
+    ...hashProblems(),
+    ...importProblems(),
+  ];
+}
+
+function functionSource(src, name) {
+  const marker = `function ${name}(`;
+  const start = src.indexOf(marker);
+  if (start < 0) return null;
+  const brace = src.indexOf('{', start);
+  if (brace < 0) return null;
+  let depth = 0;
+  for (let i = brace; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '{') depth += 1;
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+function gateBodyCallsPins(body) {
+  return GATE_PIN_CALLS.every((call) => body.includes(call));
+}
+
+function proveMainGateCallsPins() {
+  const src = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+  const body = functionSource(src, 'collectGateDiffs');
+  if (!body || !gateBodyCallsPins(body)) {
+    console.error('collectGateDiffs does not call hashProblems() and importProblems()');
+    process.exit(1);
+  }
+  for (const call of GATE_PIN_CALLS) {
+    const mutated = body.replace(call, '/* omitted */');
+    if (mutated === body || gateBodyCallsPins(mutated)) {
+      console.error(`removing ${call} from collectGateDiffs was not detected`);
+      process.exit(1);
+    }
+    console.log(`ok: removing ${call} from the main gate fails the prove check`);
+  }
+}
+
 function requireChange(label, before, after) {
   if (before === after) {
     console.error(`could not apply mutation: ${label}`);
@@ -306,12 +362,8 @@ function requireDetected(label, diffs) {
 }
 
 function proveMutationFails() {
-  const clean = [
-    ...wholeFileDiffs(),
-    ...sliceDiffs(),
-    ...hashProblems(),
-    ...importProblems(),
-  ];
+  proveMainGateCallsPins();
+  const clean = collectGateDiffs();
   if (clean.length > 0) {
     console.error('clean tree does not match the frozen bodies or pins');
     for (const diff of clean) {
@@ -408,12 +460,7 @@ function proveMutationFails() {
 if (process.argv.includes('--prove-mutation-fails')) {
   proveMutationFails();
 } else {
-  const diffs = [
-    ...wholeFileDiffs(),
-    ...sliceDiffs(),
-    ...hashProblems(),
-    ...importProblems(),
-  ];
+  const diffs = collectGateDiffs();
   if (diffs.length > 0) {
     console.error(`body diff failed against ${REFERENCE_COMMIT}`);
     for (const diff of diffs) {

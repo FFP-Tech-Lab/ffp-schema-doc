@@ -17,5 +17,7 @@ describe('whole-file body diff', () => {
     assert.match(result.stdout, /schema-fk\.ts ordinal fallback fails/);
     assert.match(result.stdout, /reference schema-enum\.ts byte change fails the pinned sha256/);
     assert.match(result.stdout, /schema-fk\.ts import redirect fails the pinned import line/);
+    assert.match(result.stdout, /removing hashProblems\(\) from the main gate fails/);
+    assert.match(result.stdout, /removing importProblems\(\) from the main gate fails/);
   });
 });

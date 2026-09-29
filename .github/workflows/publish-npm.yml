@@ -107,6 +107,9 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: pnpm
 
+      - name: Require the tag to equal v plus package.json version
+        run: node scripts/check-publish-tag.mjs "$GITHUB_REF_NAME"
+
       - name: Upgrade npm for trusted publishing
         run: |
           set -euo pipefail
@@ -186,7 +189,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "publishing with OIDC trusted publishing; NPM_TOKEN is not used"
-          env -u NODE_AUTH_TOKEN npm publish --provenance --access public
+          env -u NODE_AUTH_TOKEN npm publish --provenance --access public --ignore-scripts
 
       # secrets.NPM_TOKEN is resolved from the npm-publish environment
       # (this job sets environment: npm-publish). A repository-level secret
@@ -201,4 +204,4 @@ jobs:
           echo "OIDC trusted publishing is unavailable because ffp-schema-doc is not on the registry yet."
           echo "::warning::OIDC trusted publishing is unavailable for the first publish of ffp-schema-doc. npm trusted publishers can be configured only after the package exists, so this step falls back to NPM_TOKEN. After 0.1.0, configure trusted publishing and remove this fallback."
           test -n "${NODE_AUTH_TOKEN}"
-          npm publish --provenance --access public
+          npm publish --provenance --access public --ignore-scripts
