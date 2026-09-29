@@ -32,6 +32,26 @@ function readText(file: string): string {
   return readFileSync(file, 'utf8').replace(/\n$/, '');
 }
 
+const LOCALE_SCHEMA_DOC: Record<string, string> = {
+  'C.UTF-8': 'schema-doc.C.txt',
+  'en_US.UTF-8': 'schema-doc.en_US.txt',
+  'zh_CN.UTF-8': 'schema-doc.zh_CN.txt',
+  'sv_SE.UTF-8': 'schema-doc.sv_SE.txt',
+};
+
+function schemaDocFileForLcAll(lcAll: string | undefined): string {
+  if (!lcAll || !Object.hasOwn(LOCALE_SCHEMA_DOC, lcAll)) {
+    throw new Error(
+      `LC_ALL ${JSON.stringify(lcAll ?? '')} has no committed schemaDoc literal`,
+    );
+  }
+  return LOCALE_SCHEMA_DOC[lcAll];
+}
+
+function literalSchemaDoc(dir: string): string {
+  return readText(path.join(dir, schemaDocFileForLcAll(process.env.LC_ALL)));
+}
+
 const pgDir = path.join('test', 'golden', 'sample-postgres');
 const syntheticPgDir = path.join('test', 'golden', 'synthetic-postgres');
 const mysqlDir = path.join('test', 'golden', 'synthetic-mysql');
@@ -107,42 +127,32 @@ describe('synthetic postgres golden', () => {
     assert.doesNotMatch(composer, /from ['"]\.\.\/src\//);
   });
 
-  it('matches fa3cbe7 mergeEnumMaps(native, check) and the package glue', () => {
+  it('rejects an empty LC_ALL instead of selecting the en_US literal', () => {
+    assert.throws(() => schemaDocFileForLcAll(''), /no committed schemaDoc literal/);
+    assert.throws(() => schemaDocFileForLcAll(undefined), /no committed schemaDoc literal/);
+    assert.equal(Object.hasOwn(LOCALE_SCHEMA_DOC, ''), false);
+  });
+
+  it('matches the committed literal for this LC_ALL', () => {
     const original = schemaDocFromFa3cbe7Postgres(columns, nativeEnums, checks, foreignKeys);
-    const frozen = readText(path.join(syntheticPgDir, 'schema-doc.txt'));
     const built = buildPostgresSchemaDoc(columns, nativeEnums, checks, foreignKeys);
+    const literal = literalSchemaDoc(syntheticPgDir);
     assert.equal(built.schemaDoc, original.schemaDoc);
+    assert.equal(built.schemaDoc, literal);
     assert.equal(built.tableCount, original.tableCount);
     assert.equal(built.tableCount, metadata.tableCount);
     assert.equal(metadata.tableCount, 6);
 
-    const statusOrder = ['cancelled', 'pending', 'shipped', '已完成'].sort((a, b) =>
-      a.localeCompare(b),
-    );
-    const channelOrder = ['organic', 'paid', '推广'].sort((a, b) => a.localeCompare(b));
-    const viewOrder = ['cancelled', 'pending', '已完成'].sort((a, b) => a.localeCompare(b));
-    const capturedStatus = ['cancelled', 'pending', 'shipped', '已完成'];
-    if (statusOrder.join('\0') === capturedStatus.join('\0')) {
-      assert.equal(built.schemaDoc, frozen);
-      assert.deepEqual(
-        parseSchemaDoc(built.schemaDoc),
-        readJson(path.join(syntheticPgDir, 'parsed-tables.json')),
-      );
-    } else {
-      assert.notEqual(built.schemaDoc, frozen);
-    }
+    const enUs = readText(path.join(syntheticPgDir, 'schema-doc.en_US.txt'));
+    const cLocale = readText(path.join(syntheticPgDir, 'schema-doc.C.txt'));
+    const swedish = readText(path.join(syntheticPgDir, 'schema-doc.sv_SE.txt'));
+    const chinese = readText(path.join(syntheticPgDir, 'schema-doc.zh_CN.txt'));
+    assert.equal(enUs, readText(path.join(syntheticPgDir, 'schema-doc.txt')));
+    assert.equal(cLocale, enUs);
+    assert.equal(swedish, enUs);
+    assert.notEqual(chinese, enUs);
 
     const schemaDoc = built.schemaDoc;
-    assert.match(
-      schemaDoc,
-      new RegExp(
-        `status USER-DEFINED NOT NULL {2}-- enum: ${statusOrder.join(' \\| ')}`,
-      ),
-    );
-    assert.match(
-      schemaDoc,
-      new RegExp(`channel text NOT NULL {2}-- enum: ${channelOrder.join(' \\| ')}`),
-    );
     assert.match(schemaDoc, /status_code character varying NOT NULL,/);
     assert.doesNotMatch(schemaDoc, /status_code[^\n]*enum:/);
     assert.match(schemaDoc, /CREATE TABLE Orders \(/);
@@ -156,10 +166,6 @@ describe('synthetic postgres golden', () => {
     );
     assert.match(schemaDoc, /CREATE TABLE order_status_view \(/);
     assert.doesNotMatch(schemaDoc, /CREATE VIEW/);
-    assert.match(
-      schemaDoc,
-      new RegExp(`status USER-DEFINED {2}-- enum: ${viewOrder.join(' \\| ')}`),
-    );
     assert.doesNotMatch(schemaDoc, /CREATE TABLE order_status_view \([\s\S]*shipped/);
     assert.match(schemaDoc, /CREATE TABLE 订单 \(/);
 
@@ -169,22 +175,9 @@ describe('synthetic postgres golden', () => {
       undefined,
     );
     const orders = parsed.find((table) => table.name === 'Orders');
-    const view = parsed.find((table) => table.name === 'order_status_view');
-    assert.deepEqual(
-      orders?.columns.find((column) => column.name === 'status')?.enumValues,
-      statusOrder,
-    );
-    assert.deepEqual(
-      orders?.columns.find((column) => column.name === 'channel')?.enumValues,
-      channelOrder,
-    );
     assert.equal(
       orders?.columns.find((column) => column.name === 'status_code')?.enumValues,
       undefined,
-    );
-    assert.deepEqual(
-      view?.columns.find((column) => column.name === 'status')?.enumValues,
-      viewOrder,
     );
   });
 
@@ -206,21 +199,21 @@ describe('synthetic mysql golden', () => {
     assert.equal(metadata.capture, 'db-captured');
   });
 
-  it('matches MySQL post-processing', () => {
+  it('matches the committed literal for this LC_ALL', () => {
     const built = buildMysqlSchemaDoc(columns, foreignKeys);
-    const frozen = readText(path.join(mysqlDir, 'schema-doc.txt'));
+    const literal = literalSchemaDoc(mysqlDir);
+    assert.equal(built.schemaDoc, literal);
     assert.equal(built.tableCount, metadata.tableCount);
-    const statusOrder = ['cancelled', 'pending', '已完成'].sort((a, b) => a.localeCompare(b));
-    const capturedStatus = ['cancelled', 'pending', '已完成'];
-    if (statusOrder.join('\0') === capturedStatus.join('\0')) {
-      assert.equal(built.schemaDoc, frozen);
-      assert.deepEqual(
-        parseSchemaDoc(built.schemaDoc),
-        readJson(path.join(mysqlDir, 'parsed-tables.json')),
-      );
-    } else {
-      assert.notEqual(built.schemaDoc, frozen);
-    }
+
+    const enUs = readText(path.join(mysqlDir, 'schema-doc.en_US.txt'));
+    const cLocale = readText(path.join(mysqlDir, 'schema-doc.C.txt'));
+    const swedish = readText(path.join(mysqlDir, 'schema-doc.sv_SE.txt'));
+    const chinese = readText(path.join(mysqlDir, 'schema-doc.zh_CN.txt'));
+    assert.equal(enUs, readText(path.join(mysqlDir, 'schema-doc.txt')));
+    assert.equal(cLocale, enUs);
+    assert.equal(swedish, enUs);
+    assert.notEqual(chinese, enUs);
+
     const schemaDoc = built.schemaDoc;
     const parsed = parseSchemaDoc(schemaDoc);
 
@@ -237,9 +230,7 @@ describe('synthetic mysql golden', () => {
     const orders = parsed.find((table) => table.name === 'Orders');
     assert.ok(orders);
     const channel = orders.columns.find((column) => column.name === 'channel');
-    const status = orders.columns.find((column) => column.name === 'status');
     assert.equal(channel?.enumValues, undefined);
-    assert.deepEqual(status?.enumValues, statusOrder);
 
     assert.match(
       schemaDoc,

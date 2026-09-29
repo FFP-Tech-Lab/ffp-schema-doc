@@ -1,0 +1,35 @@
+CREATE TABLE OrderLines (
+  order_id integer NOT NULL,
+  line_no integer NOT NULL
+);
+
+CREATE TABLE Orders (
+  id integer NOT NULL,
+  region_id integer,
+  status USER-DEFINED NOT NULL  -- enum: 已完成 | cancelled | pending | shipped,
+  channel text NOT NULL  -- enum: 推广 | organic | paid,
+  status_code character varying NOT NULL,
+  CONSTRAINT Orders_region_id_fkey FOREIGN KEY (region_id) REFERENCES regions (id)
+);
+
+CREATE TABLE order_items (
+  order_id integer NOT NULL,
+  line_no integer NOT NULL,
+  qty integer NOT NULL,
+  CONSTRAINT fk_items_order_line FOREIGN KEY (order_id, line_no) REFERENCES OrderLines (order_id, line_no)
+);
+
+CREATE TABLE order_status_view (
+  id integer,
+  status USER-DEFINED  -- enum: 已完成 | cancelled | pending
+);
+
+CREATE TABLE regions (
+  id integer NOT NULL,
+  name text NOT NULL
+);
+
+CREATE TABLE 订单 (
+  id integer NOT NULL,
+  note text
+);
