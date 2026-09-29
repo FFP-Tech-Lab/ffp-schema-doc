@@ -1,0 +1,17 @@
+CREATE TABLE Orders (
+  id integer NOT NULL,
+  region_id integer,
+  status USER-DEFINED NOT NULL  -- enum: cancelled | pending | shipped | 已完成,
+  channel text NOT NULL  -- enum: organic | paid | 推广,
+  CONSTRAINT Orders_region_id_fkey FOREIGN KEY (region_id) REFERENCES regions (id)
+);
+
+CREATE TABLE order_status_view (
+  id integer,
+  status USER-DEFINED  -- enum: cancelled | pending | 已完成
+);
+
+CREATE TABLE regions (
+  id integer NOT NULL,
+  name text NOT NULL
+);

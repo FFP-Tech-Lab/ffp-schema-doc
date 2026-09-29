@@ -1,0 +1,27 @@
+{
+  "sourceRepo": "https://github.com/ChuTingzj/ai-bi",
+  "sourceCommit": "fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2",
+  "capture": "db-captured",
+  "engine": "PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)",
+  "database": "synthetic_pg_schema_doc",
+  "creationScript": "scripts/sql/synthetic-postgres.sql",
+  "schemaDocGeneratedBy": "fa3cbe7 reference copies (test/reference/ai-bi) composed as DataSourceService.extractPostgresSchema: buildNativeEnumMap, buildCheckEnumMap, mergeEnumMaps(native, check), mapPgForeignKeyRows, buildDdl. Not buildPostgresSchemaDoc.",
+  "features": [
+    "native enum",
+    "CHECK-based enum",
+    "foreign key",
+    "view",
+    "mixed-case names",
+    "CJK enum values"
+  ],
+  "tableCount": 3,
+  "note": "status is a native enum and also has a CHECK, so mergeEnumMaps unions them (shipped comes only from the CHECK; cancelled comes only from the enum). channel is text so pg_get_constraintdef stays in the ANY (ARRAY[...]) form parsePgCheckEnum accepts. The view is emitted as CREATE TABLE and does not inherit the table CHECK, so its status comment is native labels only.",
+  "introspectionSqlSha256": {
+    "pg.columns": "76c459314096227f0d7c0892c1f59045928c5410537f13963850a9753578bb90",
+    "pg.foreignKeys": "c6dca7fe151122b462ef4a93417c1d21c5132b0eabbaff9de9817e77c3aef592",
+    "pg.nativeEnums": "c46aa1a6438f908595cfe1c2b8d4022b04c7e71d0affb7801fd8f10f9ee9e62a",
+    "pg.checks": "bcedd839de2e5e81e41bccac3c4e01daf2c388a8051625f13329b007ed21aad7",
+    "mysql.columns": "3b089679e8524fef2df845b892d5aa520809815ce438ba05b523d772ab112249",
+    "mysql.foreignKeys": "485b68b3fb0e767e595ae02720f298d5025471d57568884cebb6dbb725fa8c27"
+  }
+}

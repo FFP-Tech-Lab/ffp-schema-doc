@@ -5,6 +5,9 @@
  * Offline: the reference copies are committed. Imports are stripped before
  * comparison, so schema-fk.ts may import ./schema-enum instead of @ai-bi/shared.
  *
+ * Moved files must also match in full once import lines are removed, so a
+ * change to MAX_ENUM_VALUES (or any other non-function text) fails this diff.
+ *
  * Moved functions must have an empty body diff.
  * buildPostgresSchemaDoc / buildMysqlSchemaDoc are new. Their verbatim slices
  * (typedRows mapping, mergeEnumMaps(native, check), the MySQL enum loop,
@@ -132,6 +135,11 @@ for (const pair of FILE_PAIRS) {
     }
     assertEqual(`${pair.pkg} ${name}`, pkgBody, refBody);
   }
+  assertEqual(
+    `whole file ${pair.pkg} minus imports`,
+    stripImports(read(pair.pkg)),
+    stripImports(read(pair.ref)),
+  );
 }
 
 const guidancePkg = read('src/guidance-types.ts').trim();

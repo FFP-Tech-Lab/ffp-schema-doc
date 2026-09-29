@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -33,11 +35,27 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Diff function bodies
+        run: pnpm diff-bodies
+
       - name: Test
         run: pnpm test
 
       - name: Build
         run: pnpm build
+
+      - name: Tagged commit is reachable from main
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "Tagged commit $(git rev-parse HEAD) is not reachable from origin/main." >&2
+            echo "Tag a commit that is already on main." >&2
+            exit 1
+          fi
 
       - name: Publish to npm
         env:
@@ -72,9 +90,13 @@ jobs:
             exit 1
           fi
 
-          # Trusted publishing (OIDC) first. NODE_AUTH_TOKEN is unset for this
-          # attempt so npm does not prefer a token. On failure, retry with
-          # NPM_TOKEN the same way ffp-sql-sandbox authenticates.
+          # 0.1.0 cannot use trusted publishing: npm will not attach a trusted
+          # publisher until the package exists. This attempt is expected to
+          # fail. The fallback authenticates with NPM_TOKEN and still passes
+          # --provenance. Node 22's bundled npm builds that attestation from
+          # the job OIDC token (id-token: write); the token is only the
+          # registry credential. OIDC login applies from the next version,
+          # after trusted publishing is configured on npm.
           if env -u NODE_AUTH_TOKEN npm publish --provenance --access public; then
             echo "Published ${NAME}@${VERSION} via npm trusted publishing (OIDC)"
           else

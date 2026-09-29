@@ -1,0 +1,58 @@
+[
+  {
+    "table_name": "Orders",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "Orders",
+    "column_name": "region_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "Orders",
+    "column_name": "status",
+    "data_type": "USER-DEFINED",
+    "is_nullable": "NO",
+    "udt_name": "order_status"
+  },
+  {
+    "table_name": "Orders",
+    "column_name": "channel",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "udt_name": "text"
+  },
+  {
+    "table_name": "order_status_view",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "order_status_view",
+    "column_name": "status",
+    "data_type": "USER-DEFINED",
+    "is_nullable": "YES",
+    "udt_name": "order_status"
+  },
+  {
+    "table_name": "regions",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "udt_name": "int4"
+  },
+  {
+    "table_name": "regions",
+    "column_name": "name",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "udt_name": "text"
+  }
+]

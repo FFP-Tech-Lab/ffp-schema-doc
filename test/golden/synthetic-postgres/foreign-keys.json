@@ -1,0 +1,10 @@
+[
+  {
+    "constraint_name": "Orders_region_id_fkey",
+    "from_table": "Orders",
+    "from_column": "region_id",
+    "to_table": "regions",
+    "to_column": "id",
+    "ordinal_position": 1
+  }
+]

@@ -1,0 +1,10 @@
+[
+  {
+    "table_name": "\"Orders\"",
+    "check_def": "CHECK (((status)::text = ANY (ARRAY['pending'::text, '已完成'::text, 'shipped'::text])))"
+  },
+  {
+    "table_name": "\"Orders\"",
+    "check_def": "CHECK ((channel = ANY (ARRAY['organic'::text, 'paid'::text, '推广'::text])))"
+  }
+]

@@ -9,6 +9,10 @@
  * MySQL: scripts/sql/synthetic-mysql.sql (native enum, CHECK enum, composite
  * FK, view, mixed-case names, CJK enum values, CJK table name).
  *
+ * Synthetic Postgres: scripts/sql/synthetic-postgres.sql. Its schemaDoc text
+ * is produced by scripts/fa3cbe7-postgres-schema-doc.ts (reference copies of
+ * the fa3cbe7 helpers), not by buildPostgresSchemaDoc.
+ *
  * Requires local servers reachable without a stored password:
  *   sudo -u postgres psql
  *   sudo mysql --socket=/var/run/mysqld/mysqld.sock
@@ -36,6 +40,7 @@ import type {
   PgNativeEnumQueryRow,
 } from '../src/introspect';
 import type { PgForeignKeyQueryRow } from '../src/schema-fk';
+import { schemaDocFromFa3cbe7Postgres } from './fa3cbe7-postgres-schema-doc';
 import {
   AI_BI_COMMIT,
   introspectionSqlSha256,
@@ -235,6 +240,58 @@ function captureMysql(): void {
   });
 }
 
+function captureSyntheticPostgres(): void {
+  const database = 'synthetic_pg_schema_doc';
+  psql(
+    'postgres',
+    `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${database}' AND pid <> pg_backend_pid();`,
+  );
+  psql('postgres', `DROP DATABASE IF EXISTS ${database};`);
+  psql('postgres', `CREATE DATABASE ${database};`);
+  psqlFile(database, path.join(root, 'scripts/sql/synthetic-postgres.sql'));
+
+  const columns = psqlJson<PgColumnQueryRow>(database, sql['pg.columns']);
+  const nativeEnums = psqlJson<PgNativeEnumQueryRow>(database, sql['pg.nativeEnums']);
+  const checks = psqlJson<PgCheckQueryRow>(database, sql['pg.checks']);
+  const foreignKeys = psqlJson<PgForeignKeyQueryRow>(database, sql['pg.foreignKeys']);
+  const built = schemaDocFromFa3cbe7Postgres(columns, nativeEnums, checks, foreignKeys);
+  const version = psql(database, 'SHOW server_version;').trim();
+
+  const dir = path.join(root, 'test/golden/synthetic-postgres');
+  mkdirSync(dir, { recursive: true });
+  writeJson(path.join(dir, 'columns.json'), columns);
+  writeJson(path.join(dir, 'native-enums.json'), nativeEnums);
+  writeJson(path.join(dir, 'checks.json'), checks);
+  writeJson(path.join(dir, 'foreign-keys.json'), foreignKeys);
+  writeFileSync(
+    path.join(dir, 'schema-doc.txt'),
+    built.schemaDoc.endsWith('\n') ? built.schemaDoc : `${built.schemaDoc}\n`,
+  );
+  writeJson(path.join(dir, 'parsed-tables.json'), parseSchemaDoc(built.schemaDoc));
+  writeJson(path.join(dir, 'metadata.json'), {
+    sourceRepo: 'https://github.com/ChuTingzj/ai-bi',
+    sourceCommit: AI_BI_COMMIT,
+    capture: 'db-captured',
+    engine: `PostgreSQL ${version}`,
+    database,
+    creationScript: 'scripts/sql/synthetic-postgres.sql',
+    schemaDocGeneratedBy:
+      'fa3cbe7 reference copies (test/reference/ai-bi) composed as DataSourceService.extractPostgresSchema: buildNativeEnumMap, buildCheckEnumMap, mergeEnumMaps(native, check), mapPgForeignKeyRows, buildDdl. Not buildPostgresSchemaDoc.',
+    features: [
+      'native enum',
+      'CHECK-based enum',
+      'foreign key',
+      'view',
+      'mixed-case names',
+      'CJK enum values',
+    ],
+    tableCount: built.tableCount,
+    note: 'status is a native enum and also has a CHECK, so mergeEnumMaps unions them (shipped comes only from the CHECK; cancelled comes only from the enum). channel is text so pg_get_constraintdef stays in the ANY (ARRAY[...]) form parsePgCheckEnum accepts. The view is emitted as CREATE TABLE and does not inherit the table CHECK, so its status comment is native labels only.',
+    introspectionSqlSha256: sqlSha256,
+  });
+}
+
 capturePostgres();
 captureMysql();
+captureSyntheticPostgres();
 console.log('wrote test/golden');

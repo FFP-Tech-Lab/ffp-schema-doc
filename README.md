@@ -67,13 +67,15 @@ The MySQL path only reads native `ENUM` column types. A `CHECK (col IN (...))` c
 
 ## Function bodies
 
-`pnpm diff-bodies` diffs each moved function body against the committed ai-bi sources at `fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2` (`test/reference/ai-bi/`). Imports are stripped first. The diff must be empty. The script is offline; it does not fetch GitHub. CI runs it.
+`pnpm diff-bodies` diffs each moved function body, and each moved file with import lines removed, against the committed ai-bi sources at `fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2` (`test/reference/ai-bi/`). The diff must be empty, so changing `MAX_ENUM_VALUES` fails even though it is not inside a function. The script is offline; it does not fetch GitHub. CI runs it. `test/known-limits.test.ts` also pins the constant at 50 and the drop of the 51st sorted value.
 
 `buildPostgresSchemaDoc` and `buildMysqlSchemaDoc` are new. The script diffs their copied slices (row mapping, `mergeEnumMaps(native, check)`, the MySQL enum loop, and `tableCount`) against `datasource.service.ts`. The original `await this.fetch*` lines are the pure mapper calls (`buildNativeEnumMap`, `buildCheckEnumMap`, `mapPgForeignKeyRows`, `mapMysqlForeignKeyRows`) so the functions do not open a connection.
 
 ## Goldens
 
-`test/golden/benchmark-postgres/` is db-captured from the ai-bi benchmark seed (`scripts/seed/`, same files and load order as `pnpm benchmark:db:seed`). `schema-doc.txt` is `buildDdl` with no foreign keys, matching `benchmark/scripts/setup.ts`. `schema-doc-with-fks.txt` includes foreign keys, matching `extractPostgresSchema`.
+`test/golden/benchmark-postgres/` is db-captured from the ai-bi benchmark seed (`scripts/seed/`, same files and load order as `pnpm benchmark:db:seed`). That seed has no native enum and no CHECK constraint. `schema-doc.txt` is `buildDdl` with no foreign keys, matching `benchmark/scripts/setup.ts`. `schema-doc-with-fks.txt` includes foreign keys, matching `extractPostgresSchema`.
+
+`test/golden/synthetic-postgres/` is db-captured from `scripts/sql/synthetic-postgres.sql` (native enum, CHECK enum, foreign key, view, mixed-case name, CJK enum values). Its `schema-doc.txt` is produced by `scripts/fa3cbe7-postgres-schema-doc.ts`, which calls the committed fa3cbe7 reference copies the way `extractPostgresSchema` does. It does not call `buildPostgresSchemaDoc`.
 
 `test/golden/synthetic-mysql/` is db-captured from `scripts/sql/synthetic-mysql.sql`.
 
@@ -97,3 +99,11 @@ pnpm build
 CI runs on Node 22 with pnpm 10.33.3, twice, under `LC_ALL=C.UTF-8` and `LC_ALL=en_US.UTF-8`, and logs `process.versions.icu`.
 
 The package builds to CommonJS with shipped `.d.ts` types. There is no dual ESM build.
+
+## Publish
+
+npm trusted publishing cannot be configured before the package exists on the registry. `0.1.0` publishes through the `NPM_TOKEN` fallback. That Actions secret is already set on this repo. After the package exists, configure a trusted publisher on npm; OIDC login and provenance-from-trusted-publishing apply from the next version.
+
+The publish workflow installs Node 22 and runs that Node's bundled `npm` (`npm publish`, not `pnpm publish`).
+
+Both attempts pass `--provenance`. Provenance is a sigstore attestation signed with the workflow OIDC token (`permissions: id-token: write`). It is separate from registry login. The first attempt unsets `NODE_AUTH_TOKEN` and tries trusted-publisher (OIDC) login. That attempt fails for `0.1.0` because no trusted publisher can be attached yet. The fallback sets `NODE_AUTH_TOKEN` from `NPM_TOKEN` and runs `npm publish --provenance --access public` again. Registry auth on that path is the token. Node 22's bundled npm still builds the provenance attestation from the OIDC token when `--provenance` is set, so the fallback does not skip provenance. It publishes with the token and requests the same attestation. A later version, once trusted publishing is configured, can succeed on the OIDC attempt instead.

@@ -1,11 +1,23 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
-import { buildDdl, normalizeEnumValues } from '../src/schema-enum';
+import { MAX_ENUM_VALUES, buildDdl, normalizeEnumValues } from '../src/schema-enum';
 import { parseSchemaDoc } from '../src/schema-parse';
 import { loadIntrospectionSql } from '../scripts/introspection-sql';
 
 describe('known limits', () => {
+  it('pins MAX_ENUM_VALUES at 50 and drops the 51st sorted value', () => {
+    assert.equal(MAX_ENUM_VALUES, 50);
+    const values = Array.from({ length: 51 }, (_, i) => `v${String(i).padStart(2, '0')}`);
+    const sorted = [...values].sort((a, b) => a.localeCompare(b));
+    const result = normalizeEnumValues(values);
+    assert.equal(result.length, 50);
+    assert.deepEqual(result, sorted.slice(0, 50));
+    const dropped = sorted[50];
+    assert.ok(dropped);
+    assert.equal(result.includes(dropped), false);
+  });
+
   it('drops CJK table names that are not ASCII word characters', () => {
     const ddl = buildDdl([
       {
