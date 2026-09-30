@@ -1,0 +1,80 @@
+name: Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Separate from ci.yml so the hermetic locale matrix stays unchanged.
+# postgres:16.15 and mysql:8.0.46 are pinned on purpose: the goldens were
+# captured on those versions. PostgreSQL 12+ sorts
+# information_schema.columns.table_name with collation "C", so the initdb
+# locale does not decide PostgreSQL table order (PostgreSQL 12 release notes:
+# information_schema names are sql_identifier, collation "C"). CI does not
+# prove that with a non-C database locale. Enum label order follows
+# localeCompare. MySQL table order is whatever ORDER BY TABLE_NAME returns.
+# A later minor can
+# change CHECK text from pg_get_constraintdef. Re-capture with
+# pnpm capture-golden and review the diff.
+# This job fails when the database is unreachable. It does not skip.
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      LC_ALL: C.UTF-8
+      SCHEMA_DOC_PG_HOST: 127.0.0.1
+      SCHEMA_DOC_PG_PORT: 5432
+      SCHEMA_DOC_PG_USER: postgres
+      SCHEMA_DOC_PG_PASSWORD: postgres
+      SCHEMA_DOC_PG_DATABASE: ffp_schema_doc_capture_pg
+      SCHEMA_DOC_MYSQL_HOST: 127.0.0.1
+      SCHEMA_DOC_MYSQL_PORT: 3306
+      SCHEMA_DOC_MYSQL_USER: root
+      SCHEMA_DOC_MYSQL_PASSWORD: mysql
+      SCHEMA_DOC_MYSQL_DATABASE: ffp_schema_doc_capture_mysql
+    services:
+      postgres:
+        image: postgres:16.15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ffp_schema_doc_capture_pg
+          POSTGRES_INITDB_ARGS: --encoding=UTF8 --locale=C.UTF-8
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d ffp_schema_doc_capture_pg"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.0.46
+        env:
+          MYSQL_ROOT_PASSWORD: mysql
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pmysql --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 10.33.3
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Load synthetic schemas and compare schemaDoc
+        run: pnpm test:integration
