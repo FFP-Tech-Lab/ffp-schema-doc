@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -12,12 +13,20 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
 const scriptSource = path.resolve('scripts/check-publish-pack.mjs');
+const workflowPath = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../.github/workflows/publish-npm.yml',
+);
 
-function runScript(script: string, args: readonly string[]) {
-  return spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' });
+function runScript(script: string, args: readonly string[], env?: NodeJS.ProcessEnv) {
+  return spawnSync(process.execPath, [script, ...args], {
+    encoding: 'utf8',
+    env: env === undefined ? process.env : { ...process.env, ...env },
+  });
 }
 
 function scriptTempDirs(): string[] {
@@ -69,6 +78,30 @@ function makeTarball(
   }
   const tarball = path.join(dir, `${name}.tgz`);
   execFileSync('tar', ['-czf', tarball, '-C', root, 'package']);
+  return tarball;
+}
+
+function makeMemberTarball(dir: string, name: string, arcname: string): string {
+  const tarball = path.join(dir, `${name}.tgz`);
+  const script = [
+    'import io, sys, tarfile',
+    'tarball, arcname = sys.argv[1], sys.argv[2]',
+    'data = b"pwned\\n"',
+    'with tarfile.open(tarball, "w:gz") as tar:',
+    '    info = tarfile.TarInfo(arcname)',
+    '    info.size = len(data)',
+    '    tar.addfile(info, io.BytesIO(data))',
+  ].join('\n');
+  execFileSync('python3', ['-c', script, tarball, arcname]);
+  return tarball;
+}
+
+function makeRootTarball(dir: string, name: string, prepare: (root: string) => void): string {
+  const root = path.join(dir, `${name}-root`);
+  mkdirSync(root);
+  prepare(root);
+  const tarball = path.join(dir, `${name}.tgz`);
+  execFileSync('tar', ['-czf', tarball, '-C', root, '.']);
   return tarball;
 }
 
@@ -134,6 +167,19 @@ describe('check-publish-pack manifest', { concurrency: false }, () => {
     const result = runScript(scriptSource, ['manifest', '']);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /manifest check needs the tag version/);
+  });
+
+  it('fails when package.json files is an empty array', () => {
+    withTemp((dir) => {
+      const script = writeFixture(
+        dir,
+        { name: 'pack-fixture', version: '0.2.0', files: [] },
+        { 'secret.txt': 'secret\n' },
+      );
+      const result = runScript(script, ['manifest', '0.2.0']);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /package\.json files must be a non-empty array/);
+    });
   });
 });
 
@@ -217,11 +263,62 @@ describe('check-publish-pack contents', { concurrency: false }, () => {
       assert.deepEqual(leaked, []);
     });
   });
+
+  it('leaves no temp dir after a successful contents check', () => {
+    withTemp((dir) => {
+      const childTmp = path.join(dir, 'child-tmp');
+      mkdirSync(childTmp);
+      const files = { 'README.md': 'same\n' };
+      const published = makeTarball(dir, 'published', files);
+      const local = makeTarball(dir, 'local', files);
+      const result = runScript(scriptSource, ['contents', published, local], { TMPDIR: childTmp });
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.deepEqual(readdirSync(childTmp), []);
+    });
+  });
+
+  it('does not write absolute or parent-path entries outside the temp dir', () => {
+    withTemp((dir) => {
+      const outside = path.join(dir, 'outside');
+      mkdirSync(outside);
+      const absSentinel = path.join(outside, 'abs-sentinel');
+      const childTmp = path.join(dir, 'child-tmp');
+      mkdirSync(childTmp);
+      const dotSentinel = path.join(childTmp, 'outside', 'dotdot-sentinel');
+      const absTar = makeMemberTarball(dir, 'abs', absSentinel);
+      const dotTar = makeMemberTarball(dir, 'dot', '../outside/dotdot-sentinel');
+      for (const tarball of [absTar, dotTar]) {
+        const result = runScript(scriptSource, ['contents', tarball, tarball], { TMPDIR: childTmp });
+        assert.equal(existsSync(absSentinel), false);
+        assert.equal(existsSync(dotSentinel), false);
+        assert.ok(result.status === 0 || result.status === 1, `status ${result.status}\n${result.stderr}`);
+      }
+    });
+  });
+
+  it('fails when package/ is missing or is a file', () => {
+    withTemp((dir) => {
+      const missing = makeRootTarball(dir, 'missing', (root) => {
+        writeFileSync(path.join(root, 'README.md'), 'readme\n');
+      });
+      const asFile = makeRootTarball(dir, 'as-file', (root) => {
+        writeFileSync(path.join(root, 'package'), 'not-a-directory\n');
+      });
+      const missingResult = runScript(scriptSource, ['contents', missing, missing]);
+      assert.equal(missingResult.status, 1);
+      assert.match(missingResult.stderr, /has no package\/ directory/);
+      assert.equal(missingResult.stderr.includes('readdirSync'), false);
+      const fileResult = runScript(scriptSource, ['contents', asFile, asFile]);
+      assert.equal(fileResult.status, 1);
+      assert.match(fileResult.stderr, /package\/ is not a directory/);
+      assert.equal(fileResult.stderr.includes('readdirSync'), false);
+    });
+  });
 });
 
 describe('publish workflow lines', () => {
   it('keeps the load-bearing publish job lines', () => {
-    const yaml = readFileSync('.github/workflows/publish-npm.yml', 'utf8');
+    const yaml = readFileSync(workflowPath, 'utf8');
     const testJob = yaml.slice(yaml.indexOf('\n  test:'), yaml.indexOf('\n  publish:'));
     const publishJob = yaml.slice(yaml.indexOf('\n  publish:'));
     assert.match(yaml, /--ignore-scripts/);
