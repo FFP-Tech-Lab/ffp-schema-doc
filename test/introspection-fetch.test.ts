@@ -712,6 +712,34 @@ describe('failures', () => {
     assert.equal(err.message.includes('query failed'), false);
     assert.equal(calls, 1);
   });
+
+  it('honours an abort during the last statement before building schemaDoc', async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const query: QueryFn = async (sql) => {
+      calls.push(sql);
+      if (sql === PG_FOREIGN_KEYS_SQL) controller.abort();
+      if (sql === PG_COLUMNS_SQL) return [pgColumn('regions')];
+      return [];
+    };
+    const err = await rejected(() => fetchPostgresSchemaDoc(query, { signal: controller.signal }));
+    assert.equal(err.name, 'AbortError');
+    assert.deepEqual(calls, PG_ORDER);
+
+    const mysqlController = new AbortController();
+    let mysqlCalls = 0;
+    const mysqlQuery: QueryFn = async (sql) => {
+      mysqlCalls += 1;
+      if (sql === MYSQL_FOREIGN_KEYS_SQL) mysqlController.abort();
+      if (sql === MYSQL_COLUMNS_SQL) return [mysqlColumn('regions')];
+      return [];
+    };
+    const mysqlErr = await rejected(() =>
+      fetchMysqlSchemaDoc(mysqlQuery, { database: 'app', signal: mysqlController.signal }),
+    );
+    assert.equal(mysqlErr.name, 'AbortError');
+    assert.equal(mysqlCalls, 2);
+  });
 });
 
 describe('adapters', () => {
@@ -1029,7 +1057,7 @@ describe('silent foreign-key column drops', () => {
     assert.equal(fetched.foreignKeyRows.length, 0);
     assert.match(
       fetched.warnings.messages.join('\n'),
-      /dropped 1 foreign-key row\(s\) with an empty or null column name/,
+      /dropped 1 foreign-key row\(s\) with an empty or null constraint or column name/,
     );
     assert.equal(fetched.warnings.messages.join('\n').includes('child'), false);
     const built = await fetchPostgresSchemaDoc(script.query);
@@ -1055,7 +1083,7 @@ describe('silent foreign-key column drops', () => {
     assert.equal(fetched.foreignKeyRows.length, 0);
     assert.match(
       fetched.warnings.messages.join('\n'),
-      /dropped 1 foreign-key row\(s\) with an empty or null column name/,
+      /dropped 1 foreign-key row\(s\) with an empty or null constraint or column name/,
     );
     assert.equal(fetched.warnings.messages.join('\n').includes('parent'), false);
     const built = await fetchMysqlSchemaDoc(script.query, { database: 'app' });
@@ -1064,25 +1092,363 @@ describe('silent foreign-key column drops', () => {
 });
 
 describe('native enum filtering', () => {
-  it('drops native-enum rows whose type is not used by a kept table', async () => {
-    const script = pgScript({
-      columns: [pgColumn('orders', 'status', { data_type: 'USER-DEFINED', udt_name: 'order_status' })],
-      nativeEnums: [
-        { typname: 'order_status', enumlabel: 'open' },
-        { typname: 'hidden_status', enumlabel: 'secret_label' },
-      ],
-    });
-    const fetched = await fetchPostgresIntrospectionRows(script.query);
+  it('omits an unused native enum without counting it, and counts one removed by a filter', async () => {
+    const columns = [
+      pgColumn('orders', 'status', { data_type: 'USER-DEFINED', udt_name: 'order_status' }),
+      pgColumn('orders', 'flags', { data_type: 'ARRAY', udt_name: '_order_status' }),
+    ];
+    const nativeEnums = [
+      { typname: 'order_status', enumlabel: 'open' },
+      { typname: 'hidden_status', enumlabel: 'secret_label' },
+    ];
+    const fetched = await fetchPostgresIntrospectionRows(pgScript({ columns, nativeEnums }).query);
     assert.deepEqual(
       fetched.nativeEnumRows.map((row) => row.typname),
       ['order_status'],
     );
-    assert.match(fetched.warnings.messages.join('\n'), /dropped 1 native-enum row/);
-    assert.equal(fetched.warnings.messages.join('\n').includes('secret_label'), false);
-    assert.equal(fetched.warnings.messages.join('\n').includes('hidden_status'), false);
-    const built = await fetchPostgresSchemaDoc(script.query);
+    assert.equal(fetched.warnings.count, 0);
+    const built = await fetchPostgresSchemaDoc(pgScript({ columns, nativeEnums }).query);
     assert.match(built.schemaDoc, /open/);
     assert.doesNotMatch(built.schemaDoc, /secret_label/);
+
+    const filtered = await fetchPostgresIntrospectionRows(pgScript({ columns, nativeEnums }).query, {
+      excludeTables: ['orders'],
+      allowEmpty: true,
+    });
+    assert.equal(filtered.nativeEnumRows.length, 0);
+    assert.match(
+      filtered.warnings.messages.join('\n'),
+      /dropped 1 native-enum row\(s\) whose type is used only by a filtered-out table/,
+    );
+    assert.equal(filtered.warnings.messages.join('\n').includes('secret_label'), false);
+  });
+});
+
+describe('option shapes', () => {
+  it('rejects a string excludeTables or includeTables before running a query', async () => {
+    let calls = 0;
+    const query: QueryFn = async () => {
+      calls += 1;
+      return [pgColumn('secret'), pgColumn('s')];
+    };
+    const excluded = await rejected(() =>
+      fetchPostgresSchemaDoc(query, {
+        excludeTables: 'secret' as unknown as string[],
+        strictFilters: false,
+      }),
+    );
+    assert.equal(excluded.message, 'pg.columns: excludeTables must be an array of strings');
+    assert.equal(calls, 0);
+
+    const included = await rejected(() =>
+      fetchMysqlSchemaDoc(query, {
+        database: 'app',
+        includeTables: 'orders' as unknown as string[],
+      }),
+    );
+    assert.equal(included.message, 'mysql.columns: includeTables must be an array of strings');
+    assert.equal(calls, 0);
+
+    const badItem = await rejected(() =>
+      fetchPostgresSchemaDoc(query, { includeTables: ['orders', 1] as unknown as string[] }),
+    );
+    assert.equal(badItem.message, 'pg.columns: includeTables must be an array of strings');
+    assert.equal(calls, 0);
+
+    const badStrict = await rejected(() =>
+      fetchPostgresSchemaDoc(query, { strictFilters: 'false' as unknown as boolean }),
+    );
+    assert.equal(badStrict.message, 'pg.columns: strictFilters must be a boolean');
+    assert.equal(calls, 0);
+  });
+
+  it('treats includeTables [] as an empty allow-list and [""] as an unmatched name', async () => {
+    const columns = [pgColumn('orders'), pgColumn('customers')];
+    const emptyList = await rejected(() =>
+      fetchPostgresSchemaDoc(pgScript({ columns }).query, { includeTables: [] }),
+    );
+    assert.match(emptyList.message, /no column rows left after includeTables\/excludeTables/);
+
+    const allowed = await fetchPostgresSchemaDoc(pgScript({ columns }).query, {
+      includeTables: [],
+      allowEmpty: true,
+    });
+    assert.equal(allowed.schemaDoc, '');
+    assert.deepEqual(allowed.warnings.unmatched, []);
+
+    const blankName = await fetchPostgresSchemaDoc(pgScript({ columns }).query, {
+      includeTables: [''],
+      allowEmpty: true,
+    });
+    assert.equal(blankName.schemaDoc, '');
+    assert.deepEqual(blankName.warnings.unmatched, ['']);
+  });
+
+  it('applies includeTables before excludeTables and dedupes a name listed in both', async () => {
+    const columns = [pgColumn('a'), pgColumn('b'), pgColumn('c')];
+    const built = await fetchPostgresSchemaDoc(pgScript({ columns }).query, {
+      includeTables: ['a', 'b'],
+      excludeTables: ['a'],
+    });
+    assert.match(built.schemaDoc, /CREATE TABLE b \(/);
+    assert.doesNotMatch(built.schemaDoc, /CREATE TABLE a \(/);
+    assert.doesNotMatch(built.schemaDoc, /CREATE TABLE c \(/);
+    assert.deepEqual(built.warnings.unmatched, []);
+
+    const shared = await fetchPostgresSchemaDoc(pgScript({ columns }).query, {
+      includeTables: ['a', 'missing'],
+      excludeTables: ['missing', 'missing'],
+      strictFilters: false,
+    });
+    assert.match(shared.schemaDoc, /CREATE TABLE a \(/);
+    assert.doesNotMatch(shared.schemaDoc, /CREATE TABLE b \(/);
+    assert.deepEqual(shared.warnings.unmatched, ['missing']);
+  });
+
+  it('counts a role-invisible excludeTables name as unmatched', async () => {
+    const err = await rejected(() =>
+      fetchPostgresSchemaDoc(pgScript({ columns: [pgColumn('regions')] }).query, {
+        excludeTables: ['secret_accounts'],
+        allowEmpty: true,
+      }),
+    );
+    assert.equal(err.message, 'pg.columns: unmatched excludeTables: secret_accounts');
+  });
+});
+
+describe('maxTables counting', () => {
+  it('counts kept tables, and rejects a bad maxTables before any query', async () => {
+    let calls = 0;
+    const query: QueryFn = async () => {
+      calls += 1;
+      return [pgColumn('orders')];
+    };
+    for (const maxTables of [-1, Number.NaN, 1.5]) {
+      calls = 0;
+      const err = await rejected(() => fetchPostgresSchemaDoc(query, { maxTables }));
+      assert.equal(err.message, 'pg.columns: maxTables must be a non-negative integer');
+      assert.equal(calls, 0);
+    }
+
+    const rows = [pgColumn('orders', 'id'), pgColumn('orders', 'name'), pgColumn('customers', 'id')];
+    const twoTables = await fetchPostgresIntrospectionRows(pgScript({ columns: rows }).query, {
+      maxTables: 2,
+    });
+    assert.equal(new Set(twoTables.rows.map((row) => row.table_name)).size, 2);
+    assert.equal(twoTables.rows.length, 3);
+
+    const over = await rejected(() =>
+      fetchPostgresSchemaDoc(pgScript({ columns: rows }).query, { maxTables: 1 }),
+    );
+    assert.equal(over.message, 'pg.columns: 2 tables exceed maxTables 1');
+
+    const keptOne = await fetchPostgresSchemaDoc(pgScript({ columns: rows }).query, {
+      excludeTables: ['customers'],
+      maxTables: 1,
+    });
+    assert.equal(keptOne.tableCount, 1);
+    assert.match(keptOne.schemaDoc, /CREATE TABLE orders \(/);
+    assert.doesNotMatch(keptOne.schemaDoc, /customers/);
+
+    let zeroCapCalls = 0;
+    const zeroCapQuery: QueryFn = async (sql) => {
+      zeroCapCalls += 1;
+      if (sql === PG_COLUMNS_SQL) return [pgColumn('orders')];
+      return [];
+    };
+    const zeroCap = await rejected(() => fetchPostgresSchemaDoc(zeroCapQuery, { maxTables: 0 }));
+    assert.equal(zeroCap.message, 'pg.columns: 1 tables exceed maxTables 0');
+    assert.equal(zeroCapCalls, 4);
+  });
+});
+
+describe('mysql filters', () => {
+  it('drops column and foreign-key rows for includeTables and excludeTables', async () => {
+    const columns = [mysqlColumn('orders', 'id'), mysqlColumn('orders', 'customer_id'), mysqlColumn('customers')];
+    const foreignKeys = [
+      mysqlFk({
+        fromTable: 'orders',
+        fromColumn: 'customer_id',
+        toTable: 'customers',
+        toColumn: 'id',
+        ordinal: 1,
+      }),
+    ];
+    const excluded = await fetchMysqlSchemaDoc(mysqlScript('app', { columns, foreignKeys }).query, {
+      database: 'app',
+      excludeTables: ['customers'],
+    });
+    assert.match(excluded.schemaDoc, /CREATE TABLE orders \(/);
+    assert.doesNotMatch(excluded.schemaDoc, /customers/);
+    assert.doesNotMatch(excluded.schemaDoc, /FOREIGN KEY/);
+    assert.equal(excluded.warnings.count, 1);
+    assert.match(excluded.warnings.messages.join('\n'), /not among the kept tables/);
+
+    const included = await fetchMysqlIntrospectionRows(mysqlScript('app', { columns, foreignKeys }).query, {
+      database: 'app',
+      includeTables: ['orders'],
+    });
+    assert.deepEqual(
+      included.rows.map((row) => row.table_name),
+      ['orders', 'orders'],
+    );
+    assert.equal(included.foreignKeyRows.length, 0);
+    assert.equal(included.warnings.count, 1);
+  });
+
+  it('returns an empty document when allowEmpty is set and no columns remain', async () => {
+    const empty = await fetchMysqlSchemaDoc(mysqlScript('app', { columns: [] }).query, {
+      database: 'app',
+      allowEmpty: true,
+    });
+    assert.deepEqual(
+      { schemaDoc: empty.schemaDoc, tableCount: empty.tableCount },
+      { schemaDoc: '', tableCount: 0 },
+    );
+
+    const filtered = await fetchMysqlSchemaDoc(
+      mysqlScript('app', { columns: [mysqlColumn('orders')] }).query,
+      { database: 'app', excludeTables: ['orders'], allowEmpty: true },
+    );
+    assert.equal(filtered.schemaDoc, '');
+    assert.equal(filtered.tableCount, 0);
+    assert.deepEqual(filtered.warnings.unmatched, []);
+  });
+});
+
+describe('foreign-key identifier groups', () => {
+  it('counts an empty constraint_name and drops the whole composite constraint', async () => {
+    const columns = [
+      pgColumn('child', 'a'),
+      pgColumn('child', 'b'),
+      pgColumn('parent', 'a'),
+      pgColumn('parent', 'b'),
+    ];
+    const emptyName = pgScript({
+      columns,
+      foreignKeys: [
+        pgFk({
+          fromTable: 'child',
+          fromColumn: 'a',
+          toTable: 'parent',
+          toColumn: 'a',
+          ordinal: 1,
+          name: '',
+        }),
+      ],
+    });
+    const named = await fetchPostgresSchemaDoc(emptyName.query);
+    assert.doesNotMatch(named.schemaDoc, /FOREIGN KEY/);
+    assert.match(
+      named.warnings.messages.join('\n'),
+      /dropped 1 foreign-key row\(s\) with an empty or null constraint or column name/,
+    );
+
+    const composite = pgScript({
+      columns,
+      foreignKeys: [
+        pgFk({
+          fromTable: 'child',
+          fromColumn: 'a',
+          toTable: 'parent',
+          toColumn: 'a',
+          ordinal: 1,
+          name: 'fk_ab',
+        }),
+        pgFk({
+          fromTable: 'child',
+          fromColumn: '',
+          toTable: 'parent',
+          toColumn: 'b',
+          ordinal: 2,
+          name: 'fk_ab',
+        }),
+      ],
+    });
+    const built = await fetchPostgresSchemaDoc(composite.query);
+    assert.doesNotMatch(built.schemaDoc, /FOREIGN KEY/);
+    assert.match(built.warnings.messages.join('\n'), /dropped 2 foreign-key row/);
+    const fetched = await fetchPostgresIntrospectionRows(composite.query);
+    assert.equal(fetched.foreignKeyRows.length, 0);
+
+    const mysql = mysqlScript('app', {
+      columns: [mysqlColumn('child', 'a'), mysqlColumn('child', 'b'), mysqlColumn('parent', 'a'), mysqlColumn('parent', 'b')],
+      foreignKeys: [
+        mysqlFk({
+          fromTable: 'child',
+          fromColumn: 'a',
+          toTable: 'parent',
+          toColumn: 'a',
+          ordinal: 1,
+          name: '',
+        }),
+        mysqlFk({
+          fromTable: 'child',
+          fromColumn: 'b',
+          toTable: 'parent',
+          toColumn: 'b',
+          ordinal: 2,
+          name: '',
+        }),
+      ],
+    });
+    const mysqlBuilt = await fetchMysqlSchemaDoc(mysql.query, { database: 'app' });
+    assert.doesNotMatch(mysqlBuilt.schemaDoc, /FOREIGN KEY/);
+    assert.match(mysqlBuilt.warnings.messages.join('\n'), /dropped 2 foreign-key row/);
+  });
+
+  it('counts an empty to_column by dropping every row of that constraint', async () => {
+    const script = pgScript({
+      columns: [pgColumn('child', 'a'), pgColumn('child', 'b'), pgColumn('parent', 'id')],
+      foreignKeys: [
+        pgFk({
+          fromTable: 'child',
+          fromColumn: 'a',
+          toTable: 'parent',
+          toColumn: 'id',
+          ordinal: 1,
+          name: 'fk_ab',
+        }),
+        pgFk({
+          fromTable: 'child',
+          fromColumn: 'b',
+          toTable: 'parent',
+          toColumn: '',
+          ordinal: 2,
+          name: 'fk_ab',
+        }),
+      ],
+    });
+    const built = await fetchPostgresSchemaDoc(script.query);
+    assert.doesNotMatch(built.schemaDoc, /FOREIGN KEY \(a\)/);
+    assert.doesNotMatch(built.schemaDoc, /FOREIGN KEY/);
+    assert.equal(built.warnings.count, 2);
+  });
+});
+
+describe('check-row warnings', () => {
+  it('does not count a domain check or a quoted name the normalizer would retarget', async () => {
+    const columns = [pgColumn('weird', 'channel', { data_type: 'text', udt_name: 'text' }), pgColumn('we"ird', 'channel', { data_type: 'text', udt_name: 'text' })];
+    const checks = [
+      { table_name: '-', check_def: CHANNEL_CHECK },
+      { table_name: '"we""ird"', check_def: "CHECK (channel IN ('quoted_only', 'paid'))" },
+      { table_name: 'other.weird', check_def: CHANNEL_CHECK },
+    ];
+    const fetched = await fetchPostgresIntrospectionRows(pgScript({ columns, checks }).query);
+    assert.equal(fetched.checkRows.length, 0);
+    assert.equal(fetched.warnings.count, 0);
+    const built = await fetchPostgresSchemaDoc(pgScript({ columns, checks }).query);
+    assert.doesNotMatch(built.schemaDoc, /quoted_only/);
+    assert.doesNotMatch(built.schemaDoc, /organic/);
+
+    const dotted = await fetchPostgresSchemaDoc(
+      pgScript({
+        columns: [pgColumn('a.b', 'channel', { data_type: 'text', udt_name: 'text' })],
+        checks: [{ table_name: 'public."a.b"', check_def: CHANNEL_CHECK }],
+      }).query,
+    );
+    assert.match(dotted.schemaDoc, /organic \| paid/);
+    assert.equal(dotted.warnings.count, 0);
   });
 });
 

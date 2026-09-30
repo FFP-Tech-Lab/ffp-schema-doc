@@ -6,10 +6,13 @@ on:
   pull_request:
 
 # Separate from ci.yml so the hermetic locale matrix stays unchanged.
-# postgres:16.15 is initialized with locale C.UTF-8 because table order follows
-# the database collation and the goldens were captured in that order
-# (PostgreSQL 16.15, MySQL 8.0.46). A later minor can change CHECK text from
-# pg_get_constraintdef. Re-capture with pnpm capture-golden and review the diff.
+# postgres:16.15 and mysql:8.0.46 are pinned on purpose: the goldens were
+# captured on those versions. PostgreSQL 12+ sorts
+# information_schema.columns.table_name with collation "C", so the initdb
+# locale does not decide PostgreSQL table order. Locale-dependent output is
+# enum label order (localeCompare) and MySQL table order. A later minor can
+# change CHECK text from pg_get_constraintdef. Re-capture with
+# pnpm capture-golden and review the diff.
 # This job fails when the database is unreachable. It does not skip.
 
 jobs:

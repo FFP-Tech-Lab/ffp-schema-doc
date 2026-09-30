@@ -7,8 +7,9 @@
  * Goldens were captured on PostgreSQL 16.15 and MySQL 8.0.46. A later minor
  * release can change CHECK text from pg_get_constraintdef. When schemaDoc
  * differs, re-capture with `pnpm capture-golden` and review the diff.
- * Table order follows the database collation. The workflow initializes
- * Postgres with locale C.UTF-8 so ORDER BY matches the committed golden.
+ * PostgreSQL 12+ sorts information_schema.columns.table_name with
+ * collation "C". The initdb locale does not decide that order. MySQL
+ * table order and enum label sort still follow locale.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -156,11 +157,9 @@ describe('postgres driver', () => {
       assert.equal(limited.tableCount, 1);
       assert.deepEqual(limited.warnings.unmatched, []);
       assert.deepEqual(limited.warnings, {
-        count: 9,
+        count: 3,
         messages: [
           'dropped 3 foreign-key row(s) because one or both tables are not among the kept tables',
-          'dropped 3 check row(s) for tables that are not kept',
-          'dropped 3 native-enum row(s) whose type is not used by a kept table',
         ],
         unmatched: [],
       });
