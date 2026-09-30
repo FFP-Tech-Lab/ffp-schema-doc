@@ -4,8 +4,6 @@ Build and parse schemaDoc (DDL text) from database introspection rows. Rows in, 
 
 This package is **0.x**. The schemaDoc text format is **not a stable contract**. Pin exact versions, since output text may change in minor releases.
 
-Experimental renderers are not part of this package.
-
 ## Why I wrote this
 
 I wanted one small, predictable way to turn what a database says about its own tables into a compact block of DDL text that a person, a test, or a downstream tool can read. The output is plain `CREATE TABLE` text, with enum values in comments and foreign keys after the columns.
