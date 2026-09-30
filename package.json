@@ -44,6 +44,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test \"test/**/*.test.ts\"",
+    "test:integration": "tsx --test \"test/integration/**/*.integration.ts\"",
     "diff-bodies": "node scripts/diff-function-bodies.mjs",
     "diff-bodies:prove": "node scripts/diff-function-bodies.mjs --prove-mutation-fails",
     "check-standalone": "node scripts/check-standalone.mjs",
@@ -55,6 +56,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.18.0",
+    "@types/pg": "^8.23.1",
+    "mysql2": "^3.24.5",
+    "pg": "^8.23.0",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }

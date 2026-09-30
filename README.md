@@ -38,7 +38,7 @@ parseSchemaDoc(ddl);
 
 `buildDdl` writes unquoted names, no primary key, and `NOT NULL` only when `is_nullable === 'NO'`. Enum comments look like `  -- enum: a | b`. Foreign-key lines come after the columns.
 
-PostgreSQL and MySQL callers keep their SQL and pass the raw rows to `buildPostgresSchemaDoc` or `buildMysqlSchemaDoc`. Those functions map foreign-key rows internally.
+`buildPostgresSchemaDoc` and `buildMysqlSchemaDoc` still take raw rows. Those functions map foreign-key rows internally. Optional helpers can run the shipped SQL for you; see [Fetching introspection rows](#fetching-introspection-rows).
 
 ```ts
 import { buildPostgresSchemaDoc } from 'ffp-schema-doc';
@@ -53,9 +53,52 @@ const { schemaDoc, tableCount } = buildPostgresSchemaDoc(
 
 Pin exact versions, since output text may change in minor releases.
 
-The package exports the row types callers pass in: `SchemaColumnRow`, `SchemaForeignKeyRow`, `PgColumnQueryRow`, `PgNativeEnumQueryRow`, `PgCheckQueryRow`, `PgForeignKeyQueryRow`, `MysqlColumnQueryRow`, `MysqlForeignKeyQueryRow`, and `SchemaDocResult`, plus the parsed-table types `SchemaTableMeta`, `SchemaColumnMeta`, and `SchemaRelationMeta`.
+The package exports the row types callers pass in: `SchemaColumnRow`, `SchemaForeignKeyRow`, `PgColumnQueryRow`, `PgNativeEnumQueryRow`, `PgCheckQueryRow`, `PgForeignKeyQueryRow`, `MysqlColumnQueryRow`, `MysqlForeignKeyQueryRow`, and `SchemaDocResult`, plus the parsed-table types `SchemaTableMeta`, `SchemaColumnMeta`, and `SchemaRelationMeta`. It also exports the six SQL constants, `QueryFn`, and the fetch helpers described below.
 
 `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` are left off. Turning those flags on would require edits in the files `pnpm diff-bodies` compares.
+
+## Fetching introspection rows
+
+Rows in, DDL out stays the core. `fetchPostgresSchemaDoc` and `fetchMysqlSchemaDoc` are opt-in: they run the shipped statements through a query function you supply, then call the builders above. The package does not open a connection and does not take credentials. `pg` and `mysql2` are not dependencies. The helpers target **0.2.0**. `package.json` is still `0.1.0`.
+
+```ts
+import { fetchPostgresSchemaDoc, pgQueryFn } from 'ffp-schema-doc';
+
+// `client` is a connected node-postgres Client or Pool that you create.
+const { schemaDoc, tableCount, warnings } = await fetchPostgresSchemaDoc(pgQueryFn(client));
+```
+
+```ts
+import { fetchMysqlSchemaDoc, mysql2QueryFn } from 'ffp-schema-doc';
+
+// `pool` is a mysql2 promise Pool or Connection. `database` is required.
+const { schemaDoc } = await fetchMysqlSchemaDoc(mysql2QueryFn(pool), {
+  database: 'app',
+});
+```
+
+`pgQueryFn` ignores `params` and calls `query(sql)` with no second argument. The PostgreSQL statements have no placeholders, and node-postgres treats `query(sql, [])` differently from `query(sql)`. `mysql2QueryFn` accepts the mysql2 promise API. It checks that the result is a `[rows, fields]` tuple and that `rows` is an array.
+
+`fetchPostgresIntrospectionRows` and `fetchMysqlIntrospectionRows` return the same row arrays the builders take, plus `warnings`. `fetchPostgresSchemaDoc` and `fetchMysqlSchemaDoc` return `{ schemaDoc, tableCount, warnings }`. `warnings.count` is the number of dropped foreign-key and check rows. `warnings.messages` are short summaries. Messages do not include row values.
+
+Options:
+
+- `includeTables` / `excludeTables`: exact `table_name` strings, case-sensitive as the database returned them. When both are set, inclusion is applied first.
+- `maxTables`: throw when the number of kept tables is greater than this. The helpers do not drop tables to fit the cap.
+- `allowEmpty`: default `false`. Zero kept column rows throws an error that names the likely causes (database name, schema `public`, privileges, or a filter that removed every table). `allowEmpty: true` returns `{ schemaDoc: '', tableCount: 0 }` plus `warnings`, which is what the builders return for empty column rows.
+- `signal`: checked before each statement. It does not cancel a statement that has already been sent.
+
+Statements run one after another on the connection you own. They are not wrapped in a transaction, so the result sets are not one snapshot.
+
+A thrown error from the query function is wrapped as `Error` with the query key in the message (`pg.columns: query failed`, and the same shape for the other keys) and the original value as `cause`. The wrapper does not add secrets or connection fields. Driver errors can still carry `host`, `user`, or `sql` on the cause.
+
+Use a least-privilege role that can read metadata. The library cannot force a read-only transaction, because you own the connection. Table names, column names, and enum labels can contain business data. They are copied into `schemaDoc`. Anything you pass that text to, for example an LLM prompt, receives those values. Pass `includeTables` or `excludeTables` when the catalog is wider than that text should be.
+
+A foreign-key row is kept only when both tables are among the kept column rows. This applies even when you do not pass `excludeTables`: a role can see `pg_constraint` and still be unable to read the columns. Dropped foreign keys and dropped checks are counted in `warnings`. Check table names are matched the way `buildCheckEnumMap` matches them: one leading `public.` is removed, then double quotes are removed. Non-public schemas are out of scope for this version.
+
+The native-enum statement has no schema predicate. Two enum types with the same `typname` in different schemas are merged by `typname`. Table order is the order the database returns from `ORDER BY table_name` (MySQL: `ORDER BY TABLE_NAME`). That order follows the database collation. The library does not sort table names again. Enum label order still follows `LC_ALL`.
+
+MySQL `opts.database` is required and is bound as the `?` parameter. There is no seventh `SELECT DATABASE()` statement.
 
 ## Known limits
 
@@ -85,6 +128,9 @@ These behaviors are pinned by `test/known-limits.test.ts`, `test/degenerate-inpu
 - `buildDdl` does not emit `PRIMARY KEY`; `parseSchemaDoc` skips a `PRIMARY KEY (a, b)` line and keeps columns `a` and `b`.
 - The MySQL path only reads native `ENUM` column types. A `CHECK (col IN (...))` constraint is not turned into an enum comment.
 - Adding an export to `src/introspect.ts` passes `pnpm diff-bodies`. Only the bodies of `buildPostgresSchemaDoc` and `buildMysqlSchemaDoc` are compared.
+- The fetch helpers run each shipped statement on its own. The result sets are not one transaction snapshot. `signal` is checked between statements and does not cancel a statement that has already been sent. These cases are pinned by `test/introspection-fetch.test.ts`.
+- Non-public schemas are out of scope for the fetch helpers. The shipped PostgreSQL column, check, and foreign-key statements read `public`.
+- The PostgreSQL native-enum statement has no schema filter. Same-named enum types in different schemas merge by `typname`. The fetch helper keeps the row order the query function returns, so table order follows the database collation and locale.
 
 ## Function bodies
 
@@ -106,9 +152,9 @@ Not pinned: `src/guidance-types.ts` (22 lines; the reference copy is 78 lines, a
 
 `test/golden/synthetic-mysql/` is db-captured from `scripts/sql/synthetic-mysql.sql` into `ffp_schema_doc_capture_mysql`. Its per-locale files were generated the same way with `buildMysqlSchemaDoc`, which matches the pinned MySQL slice. There is no separate frozen MySQL composer. `C` and `sv_SE` match `en_US`; `zh_CN` does not.
 
-Postgres rows are `psql` `json_agg` output. MySQL rows are `JSON_OBJECT` output. They are not `pg` or `mysql2` driver values, so driver coercions (`ordinal_position` as a string or BigInt, `Buffer`) are not in the goldens. `Number(r.ordinal_position) || 1` can hide those coercions. Callers that run their own SQL should hash it, or integration-test it, against the exported row types.
+Postgres rows are `psql` `json_agg` output. MySQL rows are `JSON_OBJECT` output. They are not `pg` or `mysql2` driver values, so driver coercions (`ordinal_position` as a string or BigInt, `Buffer`) are not in the goldens. `Number(r.ordinal_position) || 1` can hide those coercions. The unit tests replay those JSON files through a fake query function. `.github/workflows/integration.yml` loads the synthetic scripts into `postgres:16` and `mysql:8.0` and compares `schemaDoc` from real `pg` and `mysql2` clients to the `C.UTF-8` golden. Those goldens were captured on PostgreSQL 16.15 and MySQL 8.0.46. A later minor release can change CHECK text from `pg_get_constraintdef`. When that happens, re-capture with `pnpm capture-golden` and review the diff before replacing the golden. The Postgres service in that workflow is initialized with locale `C.UTF-8` because table order follows the database collation.
 
-Each `metadata.json` records the SHA-256 of the six introspection SQL strings from `datasource.service.ts` at the pinned commit. `scripts/capture-golden.ts` will only `DROP` a database named `ffp_schema_doc_capture`, `ffp_schema_doc_capture_pg`, or `ffp_schema_doc_capture_mysql`.
+Each `metadata.json` records the SHA-256 of the six introspection SQL strings from `datasource.service.ts` at the pinned commit. The same hashes are stored in `test/fixtures/introspection-sql.sha256.json` for the constants in `src/introspection-sql.ts`. `scripts/capture-golden.ts` will only `DROP` a database named `ffp_schema_doc_capture`, `ffp_schema_doc_capture_pg`, or `ffp_schema_doc_capture_mysql`.
 
 Regenerate locally (Postgres and MySQL on the machine, peer/socket auth, no credentials in the repo):
 
@@ -126,6 +172,8 @@ pnpm diff-bodies:prove
 pnpm check-standalone
 pnpm build
 ```
+
+`pnpm test` does not need a database. `pnpm test:integration` loads `scripts/sql/synthetic-postgres.sql` and `scripts/sql/synthetic-mysql.sql` through real `pg` and `mysql2` clients. It reads `SCHEMA_DOC_PG_*` and `SCHEMA_DOC_MYSQL_*` from the environment and fails when they are missing. It only resets databases named `ffp_schema_doc_capture_pg` and `ffp_schema_doc_capture_mysql`.
 
 Run the suite as `LC_ALL=en_US.UTF-8 pnpm test`, or with any of `C.UTF-8`, `en_US.UTF-8`, `zh_CN.UTF-8`, and `sv_SE.UTF-8`. An empty or unlisted `LC_ALL` intentionally fails the golden tests. The test script quotes `test/**/*.test.ts` so the shell does not expand the glob. `engines` stays `node >= 20`. The library does not require Node 21.
 

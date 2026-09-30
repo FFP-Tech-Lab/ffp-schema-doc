@@ -40,3 +40,34 @@ export type {
   PgNativeEnumQueryRow,
   SchemaDocResult,
 } from './introspect';
+
+export {
+  INTROSPECTION_SQL,
+  MYSQL_COLUMNS_SQL,
+  MYSQL_FOREIGN_KEYS_SQL,
+  PG_CHECKS_SQL,
+  PG_COLUMNS_SQL,
+  PG_FOREIGN_KEYS_SQL,
+  PG_NATIVE_ENUMS_SQL,
+} from './introspection-sql';
+export type { IntrospectionSqlKey } from './introspection-sql';
+
+export {
+  fetchMysqlIntrospectionRows,
+  fetchMysqlSchemaDoc,
+  fetchPostgresIntrospectionRows,
+  fetchPostgresSchemaDoc,
+  mysql2QueryFn,
+  pgQueryFn,
+} from './introspection-fetch';
+export type {
+  FetchOptions,
+  IntrospectionWarnings,
+  Mysql2Queryable,
+  MysqlFetchOptions,
+  MysqlIntrospectionRows,
+  PgQueryable,
+  PostgresIntrospectionRows,
+  QueryFn,
+  SchemaDocFetchResult,
+} from './introspection-fetch';
