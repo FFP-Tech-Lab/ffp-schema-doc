@@ -1,0 +1,127 @@
+[
+  {
+    "name": "OrderLines",
+    "columns": [
+      {
+        "name": "order_id",
+        "type": "integer"
+      },
+      {
+        "name": "line_no",
+        "type": "integer"
+      }
+    ]
+  },
+  {
+    "name": "Orders",
+    "columns": [
+      {
+        "name": "id",
+        "type": "integer"
+      },
+      {
+        "name": "region_id",
+        "type": "integer"
+      },
+      {
+        "name": "status",
+        "type": "USER",
+        "enumValues": [
+          "cancelled",
+          "pending",
+          "shipped",
+          "已完成"
+        ]
+      },
+      {
+        "name": "channel",
+        "type": "text",
+        "enumValues": [
+          "organic",
+          "paid",
+          "推广"
+        ]
+      },
+      {
+        "name": "status_code",
+        "type": "character"
+      }
+    ],
+    "outgoingRelations": [
+      {
+        "name": "Orders_region_id_fkey",
+        "fromTable": "Orders",
+        "fromColumns": [
+          "region_id"
+        ],
+        "toTable": "regions",
+        "toColumns": [
+          "id"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "order_items",
+    "columns": [
+      {
+        "name": "order_id",
+        "type": "integer"
+      },
+      {
+        "name": "line_no",
+        "type": "integer"
+      },
+      {
+        "name": "qty",
+        "type": "integer"
+      }
+    ],
+    "outgoingRelations": [
+      {
+        "name": "fk_items_order_line",
+        "fromTable": "order_items",
+        "fromColumns": [
+          "order_id",
+          "line_no"
+        ],
+        "toTable": "OrderLines",
+        "toColumns": [
+          "order_id",
+          "line_no"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "order_status_view",
+    "columns": [
+      {
+        "name": "id",
+        "type": "integer"
+      },
+      {
+        "name": "status",
+        "type": "USER",
+        "enumValues": [
+          "cancelled",
+          "pending",
+          "已完成"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "regions",
+    "columns": [
+      {
+        "name": "id",
+        "type": "integer"
+      },
+      {
+        "name": "name",
+        "type": "text"
+      }
+    ]
+  }
+]

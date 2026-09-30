@@ -1,0 +1,207 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      LC_ALL: C.UTF-8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Require a stable tag reachable from main
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "refusing ${tag}: only vX.Y.Z is published. Prereleases are not routed to --tag next."
+            exit 1
+          fi
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 10.33.3
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Require the tag to equal v plus package.json version
+        run: node scripts/check-publish-tag.mjs "$GITHUB_REF_NAME"
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: |
+          set -euo pipefail
+          echo "LC_ALL=${LC_ALL}"
+          locale
+          pnpm test
+
+      - name: Diff function bodies
+        run: pnpm diff-bodies
+
+      - name: Prove body-diff mutations fail
+        run: pnpm diff-bodies:prove
+
+      - name: Reject extracted-project names
+        run: pnpm check-standalone
+
+      - name: Build
+        run: pnpm build
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Require CI success for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          runs="$(gh run list --commit "$GITHUB_SHA" --workflow ci.yml --json conclusion,status,databaseId,event,headSha,url --limit 50)"
+          echo "$runs"
+          node --input-type=module -e '
+            const runs = JSON.parse(process.argv[1]);
+            const ok = runs.some((run) => run.conclusion === "success" && run.headSha === process.env.GITHUB_SHA);
+            if (!ok) {
+              console.error("ci.yml has no successful run for " + process.env.GITHUB_SHA);
+              process.exit(1);
+            }
+            console.log("ci.yml succeeded for " + process.env.GITHUB_SHA);
+          ' "$runs"
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 10.33.3
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Require the tag to equal v plus package.json version
+        run: node scripts/check-publish-tag.mjs "$GITHUB_REF_NAME"
+
+      - name: Upgrade npm for trusted publishing
+        run: |
+          set -euo pipefail
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Install and build
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm build
+
+      - name: Compare this version if it is already published
+        id: published
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          set +e
+          npm view "ffp-schema-doc@${version}" version >view.out 2>view.err
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            if grep -qiE 'E404|404 Not Found' view.err; then
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              echo "ffp-schema-doc@${version} is not published"
+              exit 0
+            fi
+            echo "npm view failed for a reason other than a missing version" >&2
+            cat view.err >&2
+            exit 1
+          fi
+          remote_head="$(npm view "ffp-schema-doc@${version}" gitHead)"
+          remote_integrity="$(npm view "ffp-schema-doc@${version}" dist.integrity)"
+          local_integrity="$(npm pack --json --ignore-scripts | node --input-type=module -e '
+            let raw = "";
+            for await (const chunk of process.stdin) raw += chunk;
+            const parsed = JSON.parse(raw);
+            const item = Array.isArray(parsed) ? parsed[0] : parsed;
+            if (!item || typeof item.integrity !== "string") {
+              console.error("npm pack did not report an integrity");
+              process.exit(1);
+            }
+            process.stdout.write(item.integrity);
+          ')"
+          if [ "$remote_head" != "$GITHUB_SHA" ] || [ "$remote_integrity" != "$local_integrity" ]; then
+            echo "published ffp-schema-doc@${version} does not match this commit" >&2
+            echo "gitHead remote=${remote_head} local=${GITHUB_SHA}" >&2
+            echo "integrity remote=${remote_integrity} local=${local_integrity}" >&2
+            exit 1
+          fi
+          echo "ffp-schema-doc@${version} is already published from this commit with the same tarball integrity"
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+
+      - name: Detect whether the package exists
+        id: registry
+        if: steps.published.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          set +e
+          npm view ffp-schema-doc version >pkg.out 2>pkg.err
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "ffp-schema-doc already exists; publishing with OIDC trusted publishing"
+          elif grep -qiE 'E404|404 Not Found' pkg.err; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "ffp-schema-doc is not on the registry (first publish)"
+          else
+            echo "npm view ffp-schema-doc failed for a reason other than a missing package" >&2
+            cat pkg.err >&2
+            exit 1
+          fi
+
+      - name: Publish with OIDC trusted publishing
+        if: steps.published.outputs.skip != 'true' && steps.registry.outputs.exists == 'true'
+        run: |
+          set -euo pipefail
+          echo "publishing with OIDC trusted publishing; NPM_TOKEN is not used"
+          env -u NODE_AUTH_TOKEN npm publish --provenance --access public --ignore-scripts
+
+      # secrets.NPM_TOKEN is resolved from the npm-publish environment
+      # (this job sets environment: npm-publish). A repository-level secret
+      # with the same name is not what this step should use. The owner moves
+      # that secret onto the environment.
+      - name: Publish the first version with NPM_TOKEN
+        if: steps.published.outputs.skip != 'true' && steps.registry.outputs.exists == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "OIDC trusted publishing is unavailable because ffp-schema-doc is not on the registry yet."
+          echo "::warning::OIDC trusted publishing is unavailable for the first publish of ffp-schema-doc. npm trusted publishers can be configured only after the package exists, so this step falls back to NPM_TOKEN. After 0.1.0, configure trusted publishing and remove this fallback."
+          test -n "${NODE_AUTH_TOKEN}"
+          npm publish --provenance --access public --ignore-scripts

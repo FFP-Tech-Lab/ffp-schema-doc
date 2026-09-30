@@ -1,0 +1,202 @@
+[
+  {
+    "name": "daily_metrics",
+    "columns": [
+      {
+        "name": "id",
+        "type": "integer"
+      },
+      {
+        "name": "metric_date",
+        "type": "date"
+      },
+      {
+        "name": "gmv",
+        "type": "numeric"
+      },
+      {
+        "name": "order_count",
+        "type": "integer"
+      },
+      {
+        "name": "new_users",
+        "type": "integer"
+      }
+    ]
+  },
+  {
+    "name": "order_items",
+    "columns": [
+      {
+        "name": "id",
+        "type": "integer"
+      },
+      {
+        "name": "order_id",
+        "type": "integer"
+      },
+      {
+        "name": "product_id",
+        "type": "integer"
+      },
+      {
+        "name": "quantity",
+        "type": "integer"
+      },
+      {
+        "name": "unit_price",
+        "type": "numeric"
+      },
+      {
+        "name": "amount",
+        "type": "numeric"
+      }
+    ],
+    "outgoingRelations": [
+      {
+        "name": "order_items_order_id_fkey",
+        "fromTable": "order_items",
+        "fromColumns": [
+          "order_id"
+        ],
+        "toTable": "orders",
+        "toColumns": [
+          "id"
+        ]
+      },
+      {
+        "name": "order_items_product_id_fkey",
+        "fromTable": "order_items",
+        "fromColumns": [
+          "product_id"
+        ],
+        "toTable": "products",
+        "toColumns": [
+          "id"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "orders",
+    "columns": [
+      {
+        "name": "id",
+        "type": "integer"
+      },
+      {
+        "name": "user_id",
+        "type": "integer"
+      },
+      {
+        "name": "status",
+        "type": "character"
+      },
+      {
+        "name": "total_amount",
+        "type": "numeric"
+      },
+      {
+        "name": "created_at",
+        "type": "timestamp"
+      }
+    ],
+    "outgoingRelations": [
+      {
+        "name": "orders_user_id_fkey",
+        "fromTable": "orders",
+        "fromColumns": [
+          "user_id"
+        ],
+        "toTable": "users",
+        "toColumns": [
+          "id"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "products",
+    "columns": [
+      {
+        "name": "id",
+        "type": "integer"
+      },
+      {
+        "name": "name",
+        "type": "character"
+      },
+      {
+        "name": "category",
+        "type": "character"
+      },
+      {
+        "name": "price",
+        "type": "numeric"
+      },
+      {
+        "name": "created_at",
+        "type": "timestamp"
+      }
+    ]
+  },
+  {
+    "name": "regions",
+    "columns": [
+      {
+        "name": "id",
+        "type": "integer"
+      },
+      {
+        "name": "name",
+        "type": "character"
+      },
+      {
+        "name": "country",
+        "type": "character"
+      }
+    ]
+  },
+  {
+    "name": "users",
+    "columns": [
+      {
+        "name": "id",
+        "type": "integer"
+      },
+      {
+        "name": "email",
+        "type": "character"
+      },
+      {
+        "name": "name",
+        "type": "character"
+      },
+      {
+        "name": "region_id",
+        "type": "integer"
+      },
+      {
+        "name": "channel",
+        "type": "character"
+      },
+      {
+        "name": "created_at",
+        "type": "timestamp"
+      }
+    ],
+    "outgoingRelations": [
+      {
+        "name": "users_region_id_fkey",
+        "fromTable": "users",
+        "fromColumns": [
+          "region_id"
+        ],
+        "toTable": "regions",
+        "toColumns": [
+          "id"
+        ]
+      }
+    ]
+  }
+]

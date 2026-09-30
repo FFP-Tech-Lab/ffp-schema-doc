@@ -1,0 +1,61 @@
+{
+  "name": "ffp-schema-doc",
+  "version": "0.1.0",
+  "description": "Build and parse schemaDoc DDL text from database introspection rows",
+  "keywords": [
+    "schema",
+    "ddl",
+    "schemadoc",
+    "postgresql",
+    "mysql",
+    "introspection",
+    "typescript",
+    "text-to-sql"
+  ],
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.33.3",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FFP-Tech-Lab/ffp-schema-doc.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test \"test/**/*.test.ts\"",
+    "diff-bodies": "node scripts/diff-function-bodies.mjs",
+    "diff-bodies:prove": "node scripts/diff-function-bodies.mjs --prove-mutation-fails",
+    "check-standalone": "node scripts/check-standalone.mjs",
+    "capture-golden": "tsx scripts/capture-golden.ts",
+    "prepack": "pnpm build"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

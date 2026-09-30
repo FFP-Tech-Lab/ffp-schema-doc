@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lc_all:
+          - C.UTF-8
+          - en_US.UTF-8
+          - zh_CN.UTF-8
+          - sv_SE.UTF-8
+    env:
+      LC_ALL: ${{ matrix.lc_all }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Ensure locales
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y locales
+          sudo locale-gen en_US.UTF-8 zh_CN.UTF-8 sv_SE.UTF-8
+          locale -a
+          locale
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 10.33.3
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Record Node and ICU
+        run: |
+          set -euo pipefail
+          echo "LC_ALL=${LC_ALL}"
+          locale
+          node -p "process.version"
+          node -p "process.versions.icu"
+          node -p "JSON.stringify({ node: process.version, icu: process.versions.icu, lcAll: process.env.LC_ALL, locale: Intl.DateTimeFormat().resolvedOptions().locale })"
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Diff function bodies
+        run: pnpm diff-bodies
+
+      - name: Prove body-diff mutations fail
+        run: pnpm diff-bodies:prove
+
+      - name: Reject extracted-project names
+        run: pnpm check-standalone
+
+      - name: Build
+        run: pnpm build
+
+      - name: Load CJS build
+        run: node -e "const m = require('./dist/index.js'); if (typeof m.buildDdl !== 'function' || typeof m.buildPostgresSchemaDoc !== 'function' || typeof m.parseSchemaDoc !== 'function' || typeof m.buildMysqlSchemaDoc !== 'function') { console.error(Object.keys(m)); process.exit(1); }"

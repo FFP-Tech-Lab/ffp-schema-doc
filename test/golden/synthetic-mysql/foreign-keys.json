@@ -1,0 +1,26 @@
+[
+  {
+    "TABLE_NAME": "order_items",
+    "COLUMN_NAME": "order_id",
+    "CONSTRAINT_NAME": "fk_items_order_line",
+    "ORDINAL_POSITION": 1,
+    "REFERENCED_TABLE_NAME": "OrderLines",
+    "REFERENCED_COLUMN_NAME": "order_id"
+  },
+  {
+    "TABLE_NAME": "order_items",
+    "COLUMN_NAME": "line_no",
+    "CONSTRAINT_NAME": "fk_items_order_line",
+    "ORDINAL_POSITION": 2,
+    "REFERENCED_TABLE_NAME": "OrderLines",
+    "REFERENCED_COLUMN_NAME": "line_no"
+  },
+  {
+    "TABLE_NAME": "Orders",
+    "COLUMN_NAME": "region_id",
+    "CONSTRAINT_NAME": "fk_orders_region",
+    "ORDINAL_POSITION": 1,
+    "REFERENCED_TABLE_NAME": "regions",
+    "REFERENCED_COLUMN_NAME": "id"
+  }
+]

@@ -1,0 +1,121 @@
+[
+  {
+    "name": "OrderLines",
+    "columns": [
+      {
+        "name": "order_id",
+        "type": "int"
+      },
+      {
+        "name": "line_no",
+        "type": "int"
+      },
+      {
+        "name": "note",
+        "type": "varchar"
+      }
+    ]
+  },
+  {
+    "name": "Orders",
+    "columns": [
+      {
+        "name": "id",
+        "type": "int"
+      },
+      {
+        "name": "region_id",
+        "type": "int"
+      },
+      {
+        "name": "status",
+        "type": "enum",
+        "enumValues": [
+          "cancelled",
+          "pending",
+          "已完成"
+        ]
+      },
+      {
+        "name": "channel",
+        "type": "varchar"
+      }
+    ],
+    "outgoingRelations": [
+      {
+        "name": "fk_orders_region",
+        "fromTable": "Orders",
+        "fromColumns": [
+          "region_id"
+        ],
+        "toTable": "regions",
+        "toColumns": [
+          "id"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "order_items",
+    "columns": [
+      {
+        "name": "order_id",
+        "type": "int"
+      },
+      {
+        "name": "line_no",
+        "type": "int"
+      },
+      {
+        "name": "qty",
+        "type": "int"
+      }
+    ],
+    "outgoingRelations": [
+      {
+        "name": "fk_items_order_line",
+        "fromTable": "order_items",
+        "fromColumns": [
+          "order_id",
+          "line_no"
+        ],
+        "toTable": "OrderLines",
+        "toColumns": [
+          "order_id",
+          "line_no"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "order_status_view",
+    "columns": [
+      {
+        "name": "id",
+        "type": "int"
+      },
+      {
+        "name": "status",
+        "type": "enum",
+        "enumValues": [
+          "cancelled",
+          "pending",
+          "已完成"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "regions",
+    "columns": [
+      {
+        "name": "id",
+        "type": "int"
+      },
+      {
+        "name": "name",
+        "type": "varchar"
+      }
+    ]
+  }
+]

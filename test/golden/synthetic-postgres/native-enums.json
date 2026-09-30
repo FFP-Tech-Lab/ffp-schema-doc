@@ -1,0 +1,14 @@
+[
+  {
+    "typname": "order_status",
+    "enumlabel": "pending"
+  },
+  {
+    "typname": "order_status",
+    "enumlabel": "已完成"
+  },
+  {
+    "typname": "order_status",
+    "enumlabel": "cancelled"
+  }
+]

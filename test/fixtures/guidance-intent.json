@@ -1,0 +1,31 @@
+{
+  "schemaDoc": "CREATE TABLE orders (\n  id integer NOT NULL,\n  status varchar  -- enum: cancelled | completed | pending,\n  user_id integer,\n  CONSTRAINT fk_orders_user FOREIGN KEY (user_id) REFERENCES users (id)\n);\n",
+  "intent": {
+    "kind": "guidance",
+    "originalQuestion": "synthetic: count completed orders",
+    "completed": false,
+    "tables": [
+      {
+        "name": "orders",
+        "columns": [
+          { "name": "id", "type": "integer" },
+          {
+            "name": "status",
+            "type": "varchar",
+            "enumValues": ["cancelled", "completed", "pending"]
+          },
+          { "name": "user_id", "type": "integer" }
+        ],
+        "outgoingRelations": [
+          {
+            "name": "fk_orders_user",
+            "fromTable": "orders",
+            "fromColumns": ["user_id"],
+            "toTable": "users",
+            "toColumns": ["id"]
+          }
+        ]
+      }
+    ]
+  }
+}
