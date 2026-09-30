@@ -1006,6 +1006,7 @@ describe('row validation', () => {
     );
     assert.match(kept.schemaDoc, / {3}id {2}integer NOT NULL/);
     assert.equal(kept.warnings.count, 0);
+    // A column name that is only U+200B is accepted (`trim()` keeps it). A foreign-key name that is only U+200B is dropped and counted in warnings.
     const zeroWidth = await fetchPostgresSchemaDoc(
       pgScript({ columns: [pgColumn('\u200B', 'id\u200B')] }).query,
     );
@@ -1141,7 +1142,7 @@ describe('silent foreign-key column drops', () => {
     assert.equal(fetched.foreignKeyRows.length, 0);
     assert.match(
       fetched.warnings.messages.join('\n'),
-      /dropped 1 foreign-key row\(s\) with an empty or whitespace-only constraint or column name/,
+      /dropped 1 foreign-key row\(s\) with a constraint or column name that is only whitespace or Unicode format characters/,
     );
     assert.equal(fetched.warnings.messages.join('\n').includes('child'), false);
     const built = await fetchPostgresSchemaDoc(script.query);
@@ -1167,7 +1168,7 @@ describe('silent foreign-key column drops', () => {
     assert.equal(fetched.foreignKeyRows.length, 0);
     assert.match(
       fetched.warnings.messages.join('\n'),
-      /dropped 1 foreign-key row\(s\) with an empty or whitespace-only constraint or column name/,
+      /dropped 1 foreign-key row\(s\) with a constraint or column name that is only whitespace or Unicode format characters/,
     );
     assert.equal(fetched.warnings.messages.join('\n').includes('parent'), false);
     const built = await fetchMysqlSchemaDoc(script.query, { database: 'app' });
@@ -1448,7 +1449,7 @@ describe('foreign-key identifier groups', () => {
     assert.doesNotMatch(named.schemaDoc, /FOREIGN KEY/);
     assert.match(
       named.warnings.messages.join('\n'),
-      /dropped 1 foreign-key row\(s\) with an empty or whitespace-only constraint or column name/,
+      /dropped 1 foreign-key row\(s\) with a constraint or column name that is only whitespace or Unicode format characters/,
     );
 
     const composite = pgScript({
@@ -1584,7 +1585,7 @@ describe('check-row warnings', () => {
 });
 
 const EMPTY_FK_WARNING =
-  'dropped 1 foreign-key row(s) with an empty or whitespace-only constraint or column name';
+  'dropped 1 foreign-key row(s) with a constraint or column name that is only whitespace or Unicode format characters';
 
 describe('mysql maxTables', () => {
   const columns = [mysqlColumn('orders', 'id'), mysqlColumn('orders', 'name'), mysqlColumn('customers', 'id')];
@@ -1686,7 +1687,19 @@ describe('option object and signal', () => {
       calls += 1;
       return [pgColumn('regions')];
     };
-    const badSignals = [{}, 'x', 1, { aborted: false }];
+    const badSignals = [
+      {},
+      'x',
+      1,
+      { aborted: false },
+      { aborted: 'no', throwIfAborted() {} },
+      { aborted: false, throwIfAborted: true },
+      { throwIfAborted() {} },
+      0,
+      '',
+      false,
+      function notASignal() {},
+    ];
     for (const signal of badSignals) {
       calls = 0;
       const err = await rejected(() =>
@@ -1706,7 +1719,13 @@ describe('option object and signal', () => {
   });
 
   it('accepts AbortSignal, AbortSignal.timeout, and a duck-typed signal', async () => {
-    const duck = { aborted: false, throwIfAborted() {} };
+    let duckCalls = 0;
+    const duck = {
+      aborted: false,
+      throwIfAborted() {
+        duckCalls += 1;
+      },
+    };
     const signals = [new AbortController().signal, AbortSignal.timeout(60_000), duck];
     for (const signal of signals) {
       const built = await fetchPostgresSchemaDoc(pgScript({ columns: [pgColumn('regions')] }).query, {
@@ -1714,6 +1733,9 @@ describe('option object and signal', () => {
       });
       assert.match(built.schemaDoc, /CREATE TABLE regions \(/);
     }
+    // Four statements plus the check after the last statement, before the builders run.
+    assert.equal(duckCalls, PG_ORDER.length + 1);
+    duckCalls = 0;
     for (const signal of [new AbortController().signal, AbortSignal.timeout(60_000), duck]) {
       const built = await fetchMysqlSchemaDoc(
         mysqlScript('app', { columns: [mysqlColumn('regions')] }).query,
@@ -1721,49 +1743,45 @@ describe('option object and signal', () => {
       );
       assert.match(built.schemaDoc, /CREATE TABLE regions \(/);
     }
+    // Two statements plus the check after the last statement, before the builders run.
+    assert.equal(duckCalls, 3);
   });
 
-  it('aborts before the first statement, between statements, and after the last statement', async () => {
-    async function checkpoint(
-      dialect: 'pg' | 'mysql',
-      when: 'before' | 'between' | 'after',
-    ): Promise<{ calls: number; name: string }> {
-      const controller = new AbortController();
-      if (when === 'before') controller.abort();
-      let calls = 0;
-      const query: QueryFn = async (sql) => {
-        calls += 1;
-        const lastSql = dialect === 'pg' ? PG_FOREIGN_KEYS_SQL : MYSQL_FOREIGN_KEYS_SQL;
-        if (when === 'between' && calls === 1) controller.abort();
-        if (when === 'after' && sql === lastSql) controller.abort();
-        if (dialect === 'pg' && sql === PG_COLUMNS_SQL) return [pgColumn('regions')];
-        if (dialect === 'mysql' && sql === MYSQL_COLUMNS_SQL) return [mysqlColumn('regions')];
-        return [];
-      };
-      const err = await rejected(() =>
-        dialect === 'pg'
-          ? fetchPostgresSchemaDoc(query, { signal: controller.signal })
-          : fetchMysqlSchemaDoc(query, { database: 'app', signal: controller.signal }),
-      );
-      assert.equal(err.name, 'AbortError', `${dialect} ${when}`);
-      assert.equal(err.message.includes('query failed'), false, `${dialect} ${when}`);
-      return { calls, name: err.name };
+  it('stops after the statement that aborts the signal, including after the last statement', async () => {
+    const dialects = [
+      { dialect: 'pg' as const, statements: PG_ORDER.length },
+      { dialect: 'mysql' as const, statements: 2 },
+    ];
+    for (const { dialect, statements } of dialects) {
+      for (let abortAt = 1; abortAt <= statements; abortAt += 1) {
+        const controller = new AbortController();
+        let calls = 0;
+        const query: QueryFn = async (sql) => {
+          calls += 1;
+          if (calls === abortAt) controller.abort();
+          if (sql === PG_COLUMNS_SQL) return [pgColumn('regions')];
+          if (sql === MYSQL_COLUMNS_SQL) return [mysqlColumn('regions')];
+          return [];
+        };
+        const run = (): Promise<unknown> => {
+          switch (dialect) {
+            case 'pg':
+              return fetchPostgresSchemaDoc(query, { signal: controller.signal });
+            case 'mysql':
+              return fetchMysqlSchemaDoc(query, { database: 'app', signal: controller.signal });
+            default: {
+              const unexpected: never = dialect;
+              throw new Error(unexpected);
+            }
+          }
+        };
+        const err = await rejected(run);
+        assert.equal(err.name, 'AbortError', `${dialect} abort at ${abortAt}`);
+        assert.equal(err.message.includes('query failed'), false, `${dialect} abort at ${abortAt}`);
+        // The last N is the checkpoint after the last statement, before the builders run.
+        assert.equal(calls, abortAt, `${dialect} abort at ${abortAt}`);
+      }
     }
-
-    const beforePg = await checkpoint('pg', 'before');
-    assert.equal(beforePg.calls, 0);
-    const beforeMysql = await checkpoint('mysql', 'before');
-    assert.equal(beforeMysql.calls, 0);
-
-    const betweenPg = await checkpoint('pg', 'between');
-    assert.equal(betweenPg.calls, 1);
-    const betweenMysql = await checkpoint('mysql', 'between');
-    assert.equal(betweenMysql.calls, 1);
-
-    const afterPg = await checkpoint('pg', 'after');
-    assert.equal(afterPg.calls, PG_ORDER.length);
-    const afterMysql = await checkpoint('mysql', 'after');
-    assert.equal(afterMysql.calls, 2);
   });
 
   it('accepts an omitted signal and signal null as no signal', async () => {
@@ -2268,6 +2286,7 @@ describe('mixed to_table groups', () => {
         ],
       }).query,
     );
+    // Known limit: frozen groupForeignKeys drops a mixed to_table group when every referenced table is kept, and warnings.count stays 0.
     assert.equal(pgKept.warnings.count, 0);
     assert.equal(pgKept.schemaDoc.includes('FOREIGN KEY'), false);
     assert.equal(

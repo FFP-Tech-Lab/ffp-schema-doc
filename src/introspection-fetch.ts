@@ -782,7 +782,7 @@ function warningsFor(counts: {
   }
   if (counts.emptyForeignKeyColumns > 0) {
     messages.push(
-      `dropped ${counts.emptyForeignKeyColumns} foreign-key row(s) with an empty or whitespace-only constraint or column name`,
+      `dropped ${counts.emptyForeignKeyColumns} foreign-key row(s) with a constraint or column name that is only whitespace or Unicode format characters`,
     );
   }
   if (counts.unmatched.length > 0) {
