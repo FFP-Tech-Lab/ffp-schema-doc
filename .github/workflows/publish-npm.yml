@@ -109,7 +109,7 @@ jobs:
                 continue;
               }
               const conclusions = forSha
-                .map((run) => run.conclusion ?? run.status ?? "unknown")
+                .map((run) => run.conclusion || run.status || "unknown")
                 .join(", ");
               console.error(
                 name + " has no successful run for " + process.env.GITHUB_SHA + " (conclusions: " + conclusions + ")",
@@ -143,6 +143,9 @@ jobs:
           pnpm install --frozen-lockfile --ignore-scripts
           pnpm build
 
+      - name: Load CJS build
+        run: node -e "const m = require('./dist/index.js'); if (typeof m.buildDdl !== 'function' || typeof m.buildPostgresSchemaDoc !== 'function' || typeof m.parseSchemaDoc !== 'function' || typeof m.buildMysqlSchemaDoc !== 'function') { console.error(Object.keys(m)); process.exit(1); }"
+
       - name: Compare this version if it is already published
         id: published
         run: |
@@ -163,26 +166,25 @@ jobs:
             exit 1
           fi
           remote_head="$(npm view "ffp-schema-doc@${version}" gitHead)"
-          remote_integrity="$(npm view "ffp-schema-doc@${version}" dist.integrity)"
-          local_integrity="$(npm pack --json --ignore-scripts | node --input-type=module -e '
-            let raw = "";
-            for await (const chunk of process.stdin) raw += chunk;
-            const parsed = JSON.parse(raw);
-            const item = Array.isArray(parsed) ? parsed[0] : parsed;
-            if (!item || typeof item.integrity !== "string") {
-              console.error("npm pack did not report an integrity");
-              process.exit(1);
-            }
-            process.stdout.write(item.integrity);
-          ')"
-          if [ "$remote_head" != "$GITHUB_SHA" ] || [ "$remote_integrity" != "$local_integrity" ]; then
-            echo "published ffp-schema-doc@${version} does not match this commit" >&2
+          if [ "$remote_head" != "$GITHUB_SHA" ]; then
+            echo "published ffp-schema-doc@${version} gitHead does not match this commit" >&2
             echo "gitHead remote=${remote_head} local=${GITHUB_SHA}" >&2
-            echo "integrity remote=${remote_integrity} local=${local_integrity}" >&2
             exit 1
           fi
-          echo "ffp-schema-doc@${version} is already published from this commit with the same tarball integrity"
+          remote_dir="${RUNNER_TEMP}/published-pack"
+          local_dir="${RUNNER_TEMP}/local-pack"
+          mkdir -p "$remote_dir" "$local_dir"
+          npm pack "ffp-schema-doc@${version}" --ignore-scripts --pack-destination "$remote_dir"
+          npm pack --ignore-scripts --pack-destination "$local_dir"
+          node scripts/check-publish-pack.mjs contents \
+            "$remote_dir/ffp-schema-doc-${version}.tgz" \
+            "$local_dir/ffp-schema-doc-${version}.tgz"
+          echo "ffp-schema-doc@${version} is already published from this commit with the same file contents"
           echo "skip=true" >> "$GITHUB_OUTPUT"
+
+      - name: Require the packed file list and version
+        if: steps.published.outputs.skip != 'true'
+        run: node scripts/check-publish-pack.mjs manifest "${GITHUB_REF_NAME#v}"
 
       - name: Publish with OIDC trusted publishing
         if: steps.published.outputs.skip != 'true'
