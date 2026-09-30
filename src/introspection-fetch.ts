@@ -304,6 +304,9 @@ async function runQuery(
 
 function assertFetchOptions(options: FetchOptions | undefined, queryKey: string): void {
   if (options === undefined) return;
+  if (options === null || typeof options !== 'object') {
+    throw new Error(`${queryKey}: options must be an object`);
+  }
   assertStringList(options.includeTables, queryKey, 'includeTables');
   assertStringList(options.excludeTables, queryKey, 'excludeTables');
   if (options.strictFilters !== undefined && typeof options.strictFilters !== 'boolean') {
@@ -317,6 +320,9 @@ function assertFetchOptions(options: FetchOptions | undefined, queryKey: string)
     (!Number.isInteger(options.maxTables) || options.maxTables < 0)
   ) {
     throw new Error(`${queryKey}: maxTables must be a non-negative integer`);
+  }
+  if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) {
+    throw new Error(`${queryKey}: signal must be an AbortSignal`);
   }
 }
 
@@ -588,7 +594,6 @@ function normalizeCheckTableName(tableName: string): string {
  * normalized name is a fetched table the caller filtered out.
  */
 function isLossyCheckTableName(tableName: string): boolean {
-  if (tableName.includes('""')) return true;
   const stripped = tableName.replace(/^public\./, '');
   if (!stripped.includes('"')) return false;
   return !/^"[^"]*"$/.test(stripped);
@@ -681,12 +686,9 @@ function filterPgForeignKeys(
   const identifiers = dropIncompleteFkGroups(
     kept,
     (row) => `${row.from_table}::${row.constraint_name}`,
-    (row) =>
-      row.constraint_name === '' ||
-      row.from_table === '' ||
-      row.from_column === '' ||
-      row.to_table === '' ||
-      row.to_column === '',
+    // Empty from_table / to_table are already dropped: keptTables only has
+    // non-empty names from column rows, so has('') is false.
+    (row) => row.constraint_name === '' || row.from_column === '' || row.to_column === '',
   );
   return { rows: identifiers.rows, dropped, emptyColumns: identifiers.dropped };
 }
@@ -711,11 +713,11 @@ function filterMysqlForeignKeys(
   const identifiers = dropIncompleteFkGroups(
     kept,
     (row) => `${row.TABLE_NAME}::${row.CONSTRAINT_NAME}`,
+    // Empty TABLE_NAME / REFERENCED_TABLE_NAME are already dropped by the
+    // kept-table check above. Whitespace is not trimmed.
     (row) =>
       row.CONSTRAINT_NAME === '' ||
-      row.TABLE_NAME === '' ||
       row.COLUMN_NAME === '' ||
-      row.REFERENCED_TABLE_NAME === '' ||
       row.REFERENCED_COLUMN_NAME === null ||
       row.REFERENCED_COLUMN_NAME === '',
   );
@@ -745,7 +747,7 @@ function warningsFor(counts: {
   }
   if (counts.emptyForeignKeyColumns > 0) {
     messages.push(
-      `dropped ${counts.emptyForeignKeyColumns} foreign-key row(s) with an empty or null constraint or column name`,
+      `dropped ${counts.emptyForeignKeyColumns} foreign-key row(s) with an empty (zero-length) constraint or column name`,
     );
   }
   if (counts.unmatched.length > 0) {
@@ -765,9 +767,6 @@ function warningsFor(counts: {
 
 function assertMaxTables(queryKey: string, tableCount: number, maxTables: number | undefined): void {
   if (maxTables === undefined) return;
-  if (!Number.isInteger(maxTables) || maxTables < 0) {
-    throw new Error(`${queryKey}: maxTables must be a non-negative integer`);
-  }
   if (tableCount > maxTables) {
     throw new Error(`${queryKey}: ${tableCount} tables exceed maxTables ${maxTables}`);
   }

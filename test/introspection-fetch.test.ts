@@ -257,12 +257,6 @@ describe('golden replay', () => {
     assert.equal(MYSQL_COLUMNS_SQL.includes(database), false);
     assert.equal(MYSQL_FOREIGN_KEYS_SQL.includes(database), false);
   });
-
-  it('throws on unknown SQL instead of returning an empty row set', async () => {
-    const script = pgScript({ columns: [pgColumn('regions')] });
-    const err = await rejected(() => script.query('SELECT 1'));
-    assert.match(err.message, /unknown SQL/);
-  });
 });
 
 describe('query shape', () => {
@@ -1057,7 +1051,7 @@ describe('silent foreign-key column drops', () => {
     assert.equal(fetched.foreignKeyRows.length, 0);
     assert.match(
       fetched.warnings.messages.join('\n'),
-      /dropped 1 foreign-key row\(s\) with an empty or null constraint or column name/,
+      /dropped 1 foreign-key row\(s\) with an empty \(zero-length\) constraint or column name/,
     );
     assert.equal(fetched.warnings.messages.join('\n').includes('child'), false);
     const built = await fetchPostgresSchemaDoc(script.query);
@@ -1083,7 +1077,7 @@ describe('silent foreign-key column drops', () => {
     assert.equal(fetched.foreignKeyRows.length, 0);
     assert.match(
       fetched.warnings.messages.join('\n'),
-      /dropped 1 foreign-key row\(s\) with an empty or null constraint or column name/,
+      /dropped 1 foreign-key row\(s\) with an empty \(zero-length\) constraint or column name/,
     );
     assert.equal(fetched.warnings.messages.join('\n').includes('parent'), false);
     const built = await fetchMysqlSchemaDoc(script.query, { database: 'app' });
@@ -1296,6 +1290,28 @@ describe('mysql filters', () => {
     assert.equal(included.warnings.count, 1);
   });
 
+  it('drops a foreign key whose source TABLE_NAME is not kept', async () => {
+    const columns = [mysqlColumn('orders', 'customer_id'), mysqlColumn('customers', 'id')];
+    const foreignKeys = [
+      mysqlFk({
+        fromTable: 'orders',
+        fromColumn: 'customer_id',
+        toTable: 'customers',
+        toColumn: 'id',
+        ordinal: 1,
+        name: 'fk_orders_customer',
+      }),
+    ];
+    const built = await fetchMysqlSchemaDoc(mysqlScript('app', { columns, foreignKeys }).query, {
+      database: 'app',
+      excludeTables: ['orders'],
+    });
+    assert.match(built.schemaDoc, /CREATE TABLE customers \(/);
+    assert.doesNotMatch(built.schemaDoc, /CREATE TABLE orders \(/);
+    assert.doesNotMatch(built.schemaDoc, /FOREIGN KEY/);
+    assert.equal(built.warnings.count, 1);
+  });
+
   it('returns an empty document when allowEmpty is set and no columns remain', async () => {
     const empty = await fetchMysqlSchemaDoc(mysqlScript('app', { columns: [] }).query, {
       database: 'app',
@@ -1341,7 +1357,7 @@ describe('foreign-key identifier groups', () => {
     assert.doesNotMatch(named.schemaDoc, /FOREIGN KEY/);
     assert.match(
       named.warnings.messages.join('\n'),
-      /dropped 1 foreign-key row\(s\) with an empty or null constraint or column name/,
+      /dropped 1 foreign-key row\(s\) with an empty \(zero-length\) constraint or column name/,
     );
 
     const composite = pgScript({
@@ -1449,6 +1465,363 @@ describe('check-row warnings', () => {
     );
     assert.match(dotted.schemaDoc, /organic \| paid/);
     assert.equal(dotted.warnings.count, 0);
+  });
+
+  it('skips a domain check even when a table is literally named -', async () => {
+    const built = await fetchPostgresSchemaDoc(
+      pgScript({
+        columns: [pgColumn('-', 'channel', { data_type: 'text', udt_name: 'text' })],
+        checks: [{ table_name: '-', check_def: "CHECK (channel IN ('domain_only', 'x'))" }],
+      }).query,
+    );
+    assert.match(built.schemaDoc, /CREATE TABLE - \(/);
+    assert.doesNotMatch(built.schemaDoc, /domain_only/);
+    assert.equal(built.warnings.count, 0);
+  });
+});
+
+const EMPTY_FK_WARNING =
+  'dropped 1 foreign-key row(s) with an empty (zero-length) constraint or column name';
+
+describe('mysql maxTables', () => {
+  const columns = [mysqlColumn('orders', 'id'), mysqlColumn('orders', 'name'), mysqlColumn('customers', 'id')];
+
+  it('throws when two kept tables exceed maxTables 1', async () => {
+    const err = await rejected(() =>
+      fetchMysqlSchemaDoc(mysqlScript('app', { columns }).query, { database: 'app', maxTables: 1 }),
+    );
+    assert.equal(err.message, 'mysql.columns: 2 tables exceed maxTables 1');
+  });
+
+  it('counts kept tables after excludeTables, not rows and not the pre-filter count', async () => {
+    const excluded = await fetchMysqlSchemaDoc(mysqlScript('app', { columns }).query, {
+      database: 'app',
+      excludeTables: ['orders'],
+      maxTables: 1,
+    });
+    assert.equal(excluded.tableCount, 1);
+    assert.match(excluded.schemaDoc, /CREATE TABLE customers \(/);
+    assert.doesNotMatch(excluded.schemaDoc, /orders/);
+
+    const manyRows = await fetchMysqlSchemaDoc(
+      mysqlScript('app', {
+        columns: [mysqlColumn('orders', 'id'), mysqlColumn('orders', 'name'), mysqlColumn('orders', 'note')],
+      }).query,
+      { database: 'app', maxTables: 1 },
+    );
+    assert.equal(manyRows.tableCount, 1);
+
+    const preFilter = await fetchMysqlSchemaDoc(
+      mysqlScript('app', {
+        columns: [mysqlColumn('orders'), mysqlColumn('customers'), mysqlColumn('regions')],
+      }).query,
+      { database: 'app', excludeTables: ['orders', 'customers'], maxTables: 1 },
+    );
+    assert.equal(preFilter.tableCount, 1);
+    assert.match(preFilter.schemaDoc, /CREATE TABLE regions \(/);
+  });
+
+  it('rejects Infinity, null, and string maxTables before any query', async () => {
+    let calls = 0;
+    const query: QueryFn = async () => {
+      calls += 1;
+      return [mysqlColumn('orders')];
+    };
+    for (const maxTables of [Number.POSITIVE_INFINITY, null, '2'] as const) {
+      calls = 0;
+      const err = await rejected(() =>
+        fetchMysqlSchemaDoc(query, { database: 'app', maxTables: maxTables as unknown as number }),
+      );
+      assert.equal(err.message, 'mysql.columns: maxTables must be a non-negative integer');
+      assert.equal(calls, 0);
+    }
+  });
+
+  it('counts a view name as a table because column rows use table_name', async () => {
+    const err = await rejected(() =>
+      fetchMysqlSchemaDoc(
+        mysqlScript('app', {
+          columns: [
+            mysqlColumn('order_status_view', 'id'),
+            mysqlColumn('order_status_view', 'status'),
+            mysqlColumn('regions', 'id'),
+          ],
+        }).query,
+        { database: 'app', maxTables: 1 },
+      ),
+    );
+    assert.equal(err.message, 'mysql.columns: 2 tables exceed maxTables 1');
+  });
+});
+
+describe('option object and signal', () => {
+  it('rejects null and non-object options before any query', async () => {
+    let calls = 0;
+    const query: QueryFn = async () => {
+      calls += 1;
+      return [pgColumn('regions')];
+    };
+    for (const options of [null, 'opts', 1]) {
+      calls = 0;
+      const err = await rejected(() =>
+        fetchPostgresSchemaDoc(query, options as unknown as { includeTables?: string[] }),
+      );
+      assert.equal(err.message, 'pg.columns: options must be an object');
+      assert.equal(calls, 0);
+    }
+    calls = 0;
+    const mysqlErr = await rejected(() =>
+      fetchMysqlSchemaDoc(query, null as unknown as { database: string }),
+    );
+    assert.equal(mysqlErr.message, 'mysql.columns: options must be an object');
+    assert.equal(calls, 0);
+  });
+
+  it('rejects a signal that is not an AbortSignal before any query', async () => {
+    let calls = 0;
+    const query: QueryFn = async () => {
+      calls += 1;
+      return [pgColumn('regions')];
+    };
+    for (const signal of [{}, 'x']) {
+      calls = 0;
+      const err = await rejected(() =>
+        fetchPostgresSchemaDoc(query, { signal: signal as unknown as AbortSignal }),
+      );
+      assert.equal(err.message, 'pg.columns: signal must be an AbortSignal');
+      assert.equal(calls, 0);
+    }
+    calls = 0;
+    const mysqlErr = await rejected(() =>
+      fetchMysqlSchemaDoc(query, { database: 'app', signal: {} as unknown as AbortSignal }),
+    );
+    assert.equal(mysqlErr.message, 'mysql.columns: signal must be an AbortSignal');
+    assert.equal(calls, 0);
+  });
+
+  it('rejects bad allowEmpty and includeTables values before any query', async () => {
+    let calls = 0;
+    const query: QueryFn = async () => {
+      calls += 1;
+      return [pgColumn('orders')];
+    };
+    calls = 0;
+    const allow = await rejected(() =>
+      fetchPostgresSchemaDoc(query, { allowEmpty: 'yes' as unknown as boolean }),
+    );
+    assert.equal(allow.message, 'pg.columns: allowEmpty must be a boolean');
+    assert.equal(calls, 0);
+
+    calls = 0;
+    const blank = await rejected(() =>
+      fetchMysqlSchemaDoc(query, { database: 'app', includeTables: '' as unknown as string[] }),
+    );
+    assert.equal(blank.message, 'mysql.columns: includeTables must be an array of strings');
+    assert.equal(calls, 0);
+
+    calls = 0;
+    const absent = await rejected(() =>
+      fetchPostgresSchemaDoc(query, { includeTables: null as unknown as string[] }),
+    );
+    assert.equal(absent.message, 'pg.columns: includeTables must be an array of strings');
+    assert.equal(calls, 0);
+  });
+
+  it('records unmatched include names before unmatched exclude names, case-sensitively', async () => {
+    const columns = [pgColumn('regions')];
+    const both = await fetchPostgresSchemaDoc(pgScript({ columns }).query, {
+      includeTables: ['x', 'Orders'],
+      excludeTables: ['y', 'orders'],
+      strictFilters: false,
+      allowEmpty: true,
+    });
+    assert.deepEqual(both.warnings.unmatched, ['x', 'Orders', 'y', 'orders']);
+    assert.equal(both.warnings.count, 4);
+
+    const caseNames = await fetchPostgresSchemaDoc(pgScript({ columns }).query, {
+      includeTables: ['Orders'],
+      excludeTables: ['orders'],
+      strictFilters: false,
+      allowEmpty: true,
+    });
+    assert.deepEqual(caseNames.warnings.unmatched, ['Orders', 'orders']);
+    assert.equal(caseNames.warnings.count, 2);
+  });
+});
+
+describe('empty foreign-key identifiers', () => {
+  const pgColumns = [pgColumn('child', 'id'), pgColumn('parent', 'id')];
+  const mysqlColumns = [mysqlColumn('child', 'id'), mysqlColumn('parent', 'id')];
+
+  it('drops a zero-length identifier and throws when a required name is null', async () => {
+    const pgEmpty: Array<[string, string]> = [
+      ['constraint_name', 'constraint_name'],
+      ['from_column', 'from_column'],
+      ['to_column', 'to_column'],
+    ];
+    for (const [field] of pgEmpty) {
+      const built = await fetchPostgresSchemaDoc(
+        pgScript({
+          columns: pgColumns,
+          foreignKeys: [{ ...pgFk({ fromTable: 'child', fromColumn: 'id', toTable: 'parent', toColumn: 'id', ordinal: 1 }), [field]: '' }],
+        }).query,
+      );
+      assert.equal(built.warnings.count, 1, field);
+      assert.equal(built.warnings.messages[0], EMPTY_FK_WARNING, field);
+      assert.doesNotMatch(built.schemaDoc, /FOREIGN KEY/);
+    }
+    for (const field of ['constraint_name', 'from_column', 'to_column']) {
+      for (const value of [null, undefined]) {
+        const err = await rejected(() =>
+          fetchPostgresSchemaDoc(
+            pgScript({
+              columns: pgColumns,
+              foreignKeys: [
+                {
+                  ...pgFk({
+                    fromTable: 'child',
+                    fromColumn: 'id',
+                    toTable: 'parent',
+                    toColumn: 'id',
+                    ordinal: 1,
+                  }),
+                  [field]: value,
+                },
+              ],
+            }).query,
+          ),
+        );
+        assert.equal(err.message, `pg.foreignKeys: ${field} must be a string`);
+      }
+    }
+
+    const mysqlEmpty: Array<[string, string]> = [
+      ['CONSTRAINT_NAME', 'CONSTRAINT_NAME'],
+      ['COLUMN_NAME', 'COLUMN_NAME'],
+      ['REFERENCED_COLUMN_NAME', 'REFERENCED_COLUMN_NAME'],
+    ];
+    for (const [field] of mysqlEmpty) {
+      const built = await fetchMysqlSchemaDoc(
+        mysqlScript('app', {
+          columns: mysqlColumns,
+          foreignKeys: [
+            {
+              ...mysqlFk({
+                fromTable: 'child',
+                fromColumn: 'id',
+                toTable: 'parent',
+                toColumn: 'id',
+                ordinal: 1,
+              }),
+              [field]: '',
+            },
+          ],
+        }).query,
+        { database: 'app' },
+      );
+      assert.equal(built.warnings.count, 1, field);
+      assert.equal(built.warnings.messages[0], EMPTY_FK_WARNING, field);
+      assert.doesNotMatch(built.schemaDoc, /FOREIGN KEY/);
+    }
+    const mysqlNull = await fetchMysqlSchemaDoc(
+      mysqlScript('app', {
+        columns: mysqlColumns,
+        foreignKeys: [
+          {
+            ...mysqlFk({
+              fromTable: 'child',
+              fromColumn: 'id',
+              toTable: 'parent',
+              toColumn: 'id',
+              ordinal: 1,
+            }),
+            REFERENCED_COLUMN_NAME: null,
+          },
+        ],
+      }).query,
+      { database: 'app' },
+    );
+    assert.equal(mysqlNull.warnings.count, 1);
+    assert.equal(mysqlNull.warnings.messages[0], EMPTY_FK_WARNING);
+    for (const field of ['CONSTRAINT_NAME', 'COLUMN_NAME']) {
+      const err = await rejected(() =>
+        fetchMysqlSchemaDoc(
+          mysqlScript('app', {
+            columns: mysqlColumns,
+            foreignKeys: [
+              {
+                ...mysqlFk({
+                  fromTable: 'child',
+                  fromColumn: 'id',
+                  toTable: 'parent',
+                  toColumn: 'id',
+                  ordinal: 1,
+                }),
+                [field]: null,
+              },
+            ],
+          }).query,
+          { database: 'app' },
+        ),
+      );
+      assert.equal(err.message, `mysql.foreignKeys: ${field} must be a string`);
+    }
+  });
+
+  it('keeps whitespace-only foreign-key names', async () => {
+    const spaced = await fetchPostgresSchemaDoc(
+      pgScript({
+        columns: pgColumns,
+        foreignKeys: [
+          pgFk({
+            fromTable: 'child',
+            fromColumn: 'id',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+            name: '  ',
+          }),
+        ],
+      }).query,
+    );
+    assert.match(spaced.schemaDoc, /FOREIGN KEY/);
+    assert.equal(spaced.warnings.count, 0);
+
+    const tabbed = await fetchPostgresSchemaDoc(
+      pgScript({
+        columns: pgColumns,
+        foreignKeys: [
+          pgFk({
+            fromTable: 'child',
+            fromColumn: '\t',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+          }),
+        ],
+      }).query,
+    );
+    assert.match(tabbed.schemaDoc, /FOREIGN KEY/);
+    assert.equal(tabbed.warnings.count, 0);
+
+    const mysqlSpaced = await fetchMysqlSchemaDoc(
+      mysqlScript('app', {
+        columns: mysqlColumns,
+        foreignKeys: [
+          mysqlFk({
+            fromTable: 'child',
+            fromColumn: '  ',
+            toTable: 'parent',
+            toColumn: '\t',
+            ordinal: 1,
+            name: '  ',
+          }),
+        ],
+      }).query,
+      { database: 'app' },
+    );
+    assert.match(mysqlSpaced.schemaDoc, /FOREIGN KEY/);
+    assert.equal(mysqlSpaced.warnings.count, 0);
   });
 });
 

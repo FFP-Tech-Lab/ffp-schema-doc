@@ -8,8 +8,10 @@
  * release can change CHECK text from pg_get_constraintdef. When schemaDoc
  * differs, re-capture with `pnpm capture-golden` and review the diff.
  * PostgreSQL 12+ sorts information_schema.columns.table_name with
- * collation "C". The initdb locale does not decide that order. MySQL
- * table order and enum label sort still follow locale.
+ * collation "C" (sql_identifier; PostgreSQL 12 release notes). The initdb
+ * locale does not decide that order. Enum labels follow LC_ALL. MySQL table
+ * order is whatever the server returns; this suite does not assume another
+ * collation.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

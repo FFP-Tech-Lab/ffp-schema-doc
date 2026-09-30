@@ -9,8 +9,11 @@ on:
 # postgres:16.15 and mysql:8.0.46 are pinned on purpose: the goldens were
 # captured on those versions. PostgreSQL 12+ sorts
 # information_schema.columns.table_name with collation "C", so the initdb
-# locale does not decide PostgreSQL table order. Locale-dependent output is
-# enum label order (localeCompare) and MySQL table order. A later minor can
+# locale does not decide PostgreSQL table order (PostgreSQL 12 release notes:
+# information_schema names are sql_identifier, collation "C"). CI does not
+# prove that with a non-C database locale. Enum label order follows
+# localeCompare. MySQL table order is whatever ORDER BY TABLE_NAME returns.
+# A later minor can
 # change CHECK text from pg_get_constraintdef. Re-capture with
 # pnpm capture-golden and review the diff.
 # This job fails when the database is unreachable. It does not skip.
