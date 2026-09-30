@@ -13,14 +13,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
 const scriptSource = path.resolve('scripts/check-publish-pack.mjs');
-const workflowPath = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '../.github/workflows/publish-npm.yml',
-);
+const workflowPath = path.join(__dirname, '../.github/workflows/publish-npm.yml');
 
 function runScript(script: string, args: readonly string[], env?: NodeJS.ProcessEnv) {
   return spawnSync(process.execPath, [script, ...args], {
