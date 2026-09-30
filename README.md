@@ -94,7 +94,7 @@ Options, checked before the first statement:
 
 An enum that is used only through an array column is omitted from `schemaDoc` with no warning. PostgreSQL reports that column's `udt_name` as `_typname` (a leading underscore), and the fetch helper matches `typname` exactly.
 
-Composite foreign keys whose rows name different `to_table` values can only occur with synthetic rows. A real catalog has one referenced table per constraint. Rows that reference a table that is not kept are dropped one by one and counted in `warnings`. `groupForeignKeys` then silently drops a whole group whose rows still name different tables, and does not emit a partial key.
+Composite foreign keys with inconsistent `to_table` values can only occur with synthetic rows. A real catalog gives one referenced table per constraint. When one row's `to_table` is not in the kept set, the fetch layer drops only that row and counts it once in `warnings`. The remaining rows of the same constraint can still be emitted as a shorter partial key. Separately, when rows of one constraint reference different tables and all of those tables are kept, the frozen `groupForeignKeys` silently drops the whole group and `warnings.count` stays 0.
 
 Statements run one after another on the connection you own. They are not wrapped in a transaction, so the result sets are not one snapshot.
 
@@ -134,7 +134,7 @@ These behaviors are pinned by `test/known-limits.test.ts`, `test/degenerate-inpu
 - A self-referential foreign key is emitted: `CONSTRAINT fk_mgr FOREIGN KEY (mgr_id) REFERENCES emp (id)`.
 - A foreign key whose `from_table` has no column rows still emits a `CREATE TABLE` that contains only the constraint.
 - The same constraint name on two tables is kept as two constraints, because the group key includes the source table.
-- Composite foreign keys whose rows name different `to_table` values can only occur with synthetic rows. A real catalog has one referenced table per constraint. Rows that reference a table that is not kept are dropped one by one and counted in `warnings`. `groupForeignKeys` then silently drops a whole group whose rows still name different tables, and does not emit a partial key.
+- Composite foreign keys with inconsistent `to_table` values can only occur with synthetic rows. A real catalog gives one referenced table per constraint. When one row's `to_table` is not in the kept set, the fetch layer drops only that row and counts it once in `warnings`. The remaining rows of the same constraint can still be emitted as a shorter partial key. Separately, when rows of one constraint reference different tables and all of those tables are kept, the frozen `groupForeignKeys` silently drops the whole group and `warnings.count` stays 0.
 - `buildDdl` does not emit `PRIMARY KEY`; `parseSchemaDoc` skips a `PRIMARY KEY (a, b)` line and keeps columns `a` and `b`.
 - The MySQL path only reads native `ENUM` column types. A `CHECK (col IN (...))` constraint is not turned into an enum comment.
 - Adding an export to `src/introspect.ts` passes `pnpm diff-bodies`. Only the bodies of `buildPostgresSchemaDoc` and `buildMysqlSchemaDoc` are compared.
