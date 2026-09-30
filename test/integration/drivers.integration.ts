@@ -171,6 +171,54 @@ describe('postgres driver', () => {
         assert.equal(limited.warnings.messages.join('\n').includes(name), false, name);
       }
       assert.doesNotMatch(limited.schemaDoc, /FOREIGN KEY/);
+
+      await client.query(`
+        CREATE TABLE "-" (
+          channel text NOT NULL,
+          CONSTRAINT dash_table_chk CHECK (channel IN ('table_kept', 'x'))
+        )
+      `);
+      await client.query(`
+        CREATE DOMAIN dash_channel AS text
+          CONSTRAINT dash_domain_chk CHECK (VALUE IN ('domain_omit', 'y'))
+      `);
+      const catalog = await client.query<{ table_name: string; check_def: string }>(`
+        SELECT c.conrelid::regclass::text AS table_name,
+               pg_get_constraintdef(c.oid) AS check_def
+        FROM pg_constraint c
+        JOIN pg_namespace n ON n.oid = c.connamespace
+        WHERE c.contype = 'c'
+          AND n.nspname = 'public'
+          AND (
+            pg_get_constraintdef(c.oid) LIKE '%table_kept%'
+            OR pg_get_constraintdef(c.oid) LIKE '%domain_omit%'
+          )
+      `);
+      const tableCatalog = catalog.rows.find((row) => row.check_def.includes('table_kept'));
+      const domainCatalog = catalog.rows.find((row) => row.check_def.includes('domain_omit'));
+      assert.ok(tableCatalog, 'missing table check in pg_constraint');
+      assert.ok(domainCatalog, 'missing domain check in pg_constraint');
+      assert.ok(
+        tableCatalog.table_name === '"-"' || tableCatalog.table_name === 'public."-"',
+        `table regclass was ${tableCatalog.table_name}`,
+      );
+      assert.equal(domainCatalog.table_name, '-', `domain regclass was ${domainCatalog.table_name}`);
+
+      const dashRows = await fetchPostgresIntrospectionRows(pgQueryFn(client), { includeTables: ['-'] });
+      assert.ok(dashRows.rows.some((row) => row.table_name === '-'));
+      assert.ok(
+        dashRows.checkRows.some(
+          (row) => row.table_name === tableCatalog.table_name && row.check_def.includes('table_kept'),
+        ),
+      );
+      assert.equal(
+        dashRows.checkRows.some((row) => row.table_name === '-' || row.check_def.includes('domain_omit')),
+        false,
+      );
+      const dash = await fetchPostgresSchemaDoc(pgQueryFn(client), { includeTables: ['-'] });
+      assert.match(dash.schemaDoc, /CREATE TABLE - \(/);
+      assert.match(dash.schemaDoc, /table_kept/);
+      assert.doesNotMatch(dash.schemaDoc, /domain_omit/);
     } finally {
       await reader?.end();
       await dropPgReader(client).catch(() => undefined);

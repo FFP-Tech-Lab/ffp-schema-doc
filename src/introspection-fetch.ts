@@ -62,10 +62,12 @@ export type FetchOptions = {
    */
   allowEmpty?: boolean;
   /**
-   * Checked before each statement. It does not cancel a statement that has
-   * already been sent; the driver decides whether that statement can be aborted.
+   * Checked before each statement and again after the last one. Omission and
+   * `null` mean no signal. Any other value must have a boolean `aborted` and
+   * a `throwIfAborted` function (`AbortSignal` does). It does not cancel a
+   * statement that has already been sent.
    */
-  signal?: AbortSignal;
+  signal?: { aborted: boolean; throwIfAborted(): void } | null;
 };
 
 export type MysqlFetchOptions = FetchOptions & {
@@ -280,7 +282,13 @@ function withWarnings(
   };
 }
 
-function throwIfAborted(signal: AbortSignal | undefined): void {
+function isQuerySignal(value: unknown): value is { aborted: boolean; throwIfAborted(): void } {
+  if (value === null || typeof value !== 'object') return false;
+  const signal = value as { aborted?: unknown; throwIfAborted?: unknown };
+  return typeof signal.aborted === 'boolean' && typeof signal.throwIfAborted === 'function';
+}
+
+function throwIfAborted(signal: { throwIfAborted(): void } | null | undefined): void {
   signal?.throwIfAborted();
 }
 
@@ -321,7 +329,7 @@ function assertFetchOptions(options: FetchOptions | undefined, queryKey: string)
   ) {
     throw new Error(`${queryKey}: maxTables must be a non-negative integer`);
   }
-  if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) {
+  if (options.signal != null && !isQuerySignal(options.signal)) {
     throw new Error(`${queryKey}: signal must be an AbortSignal`);
   }
 }
@@ -639,6 +647,10 @@ function filterNativeEnumRows(
   return { rows: kept, dropped };
 }
 
+function isBlankIdentifier(value: string): boolean {
+  return value.trim() === '';
+}
+
 function dropIncompleteFkGroups<T>(
   rows: readonly T[],
   groupKey: (row: T) => string,
@@ -688,7 +700,11 @@ function filterPgForeignKeys(
     (row) => `${row.from_table}::${row.constraint_name}`,
     // Empty from_table / to_table are already dropped: keptTables only has
     // non-empty names from column rows, so has('') is false.
-    (row) => row.constraint_name === '' || row.from_column === '' || row.to_column === '',
+    // Whitespace-only names are dropped. A non-blank name is not rewritten.
+    (row) =>
+      isBlankIdentifier(row.constraint_name) ||
+      isBlankIdentifier(row.from_column) ||
+      isBlankIdentifier(row.to_column),
   );
   return { rows: identifiers.rows, dropped, emptyColumns: identifiers.dropped };
 }
@@ -714,12 +730,13 @@ function filterMysqlForeignKeys(
     kept,
     (row) => `${row.TABLE_NAME}::${row.CONSTRAINT_NAME}`,
     // Empty TABLE_NAME / REFERENCED_TABLE_NAME are already dropped by the
-    // kept-table check above. Whitespace is not trimmed.
+    // kept-table check above. Whitespace-only names are dropped. A non-blank
+    // name is not rewritten.
     (row) =>
-      row.CONSTRAINT_NAME === '' ||
-      row.COLUMN_NAME === '' ||
+      isBlankIdentifier(row.CONSTRAINT_NAME) ||
+      isBlankIdentifier(row.COLUMN_NAME) ||
       row.REFERENCED_COLUMN_NAME === null ||
-      row.REFERENCED_COLUMN_NAME === '',
+      row.REFERENCED_COLUMN_NAME.trim() === '',
   );
   return { rows: identifiers.rows, dropped, emptyColumns: identifiers.dropped };
 }
@@ -747,7 +764,7 @@ function warningsFor(counts: {
   }
   if (counts.emptyForeignKeyColumns > 0) {
     messages.push(
-      `dropped ${counts.emptyForeignKeyColumns} foreign-key row(s) with an empty (zero-length) constraint or column name`,
+      `dropped ${counts.emptyForeignKeyColumns} foreign-key row(s) with an empty or whitespace-only constraint or column name`,
     );
   }
   if (counts.unmatched.length > 0) {

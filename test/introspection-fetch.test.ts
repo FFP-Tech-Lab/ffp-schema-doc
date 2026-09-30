@@ -885,6 +885,34 @@ describe('unmatched table filters', () => {
       'pg.columns: unmatched excludeTables: bad_ex; unmatched includeTables: typo',
     );
   });
+
+  it('records one unmatched MySQL include name when strictFilters is false', async () => {
+    const built = await fetchMysqlSchemaDoc(
+      mysqlScript('app', { columns: [mysqlColumn('orders')] }).query,
+      { database: 'app', includeTables: ['typo'], strictFilters: false, allowEmpty: true },
+    );
+    assert.deepEqual(built.warnings.unmatched, ['typo']);
+    assert.equal(built.warnings.count, built.warnings.unmatched.length);
+  });
+
+  it('keeps both casings when excludeTables lists Orders and orders', async () => {
+    const built = await fetchPostgresSchemaDoc(pgScript({ columns: [pgColumn('regions')] }).query, {
+      excludeTables: ['Orders', 'orders'],
+      strictFilters: false,
+    });
+    assert.deepEqual(built.warnings.unmatched, ['Orders', 'orders']);
+    assert.equal(built.warnings.count, 2);
+  });
+
+  it('lists a repeated strict excludeTables name once', async () => {
+    const err = await rejected(() =>
+      fetchPostgresSchemaDoc(pgScript({ columns: [pgColumn('regions')] }).query, {
+        excludeTables: ['x', 'x'],
+        strictFilters: true,
+      }),
+    );
+    assert.equal(err.message, 'pg.columns: unmatched excludeTables: x');
+  });
 });
 
 describe('row validation', () => {
@@ -1051,7 +1079,7 @@ describe('silent foreign-key column drops', () => {
     assert.equal(fetched.foreignKeyRows.length, 0);
     assert.match(
       fetched.warnings.messages.join('\n'),
-      /dropped 1 foreign-key row\(s\) with an empty \(zero-length\) constraint or column name/,
+      /dropped 1 foreign-key row\(s\) with an empty or whitespace-only constraint or column name/,
     );
     assert.equal(fetched.warnings.messages.join('\n').includes('child'), false);
     const built = await fetchPostgresSchemaDoc(script.query);
@@ -1077,7 +1105,7 @@ describe('silent foreign-key column drops', () => {
     assert.equal(fetched.foreignKeyRows.length, 0);
     assert.match(
       fetched.warnings.messages.join('\n'),
-      /dropped 1 foreign-key row\(s\) with an empty \(zero-length\) constraint or column name/,
+      /dropped 1 foreign-key row\(s\) with an empty or whitespace-only constraint or column name/,
     );
     assert.equal(fetched.warnings.messages.join('\n').includes('parent'), false);
     const built = await fetchMysqlSchemaDoc(script.query, { database: 'app' });
@@ -1115,6 +1143,7 @@ describe('native enum filtering', () => {
       /dropped 1 native-enum row\(s\) whose type is used only by a filtered-out table/,
     );
     assert.equal(filtered.warnings.messages.join('\n').includes('secret_label'), false);
+    assert.equal(filtered.warnings.count, 1);
   });
 });
 
@@ -1357,7 +1386,7 @@ describe('foreign-key identifier groups', () => {
     assert.doesNotMatch(named.schemaDoc, /FOREIGN KEY/);
     assert.match(
       named.warnings.messages.join('\n'),
-      /dropped 1 foreign-key row\(s\) with an empty \(zero-length\) constraint or column name/,
+      /dropped 1 foreign-key row\(s\) with an empty or whitespace-only constraint or column name/,
     );
 
     const composite = pgScript({
@@ -1467,7 +1496,19 @@ describe('check-row warnings', () => {
     assert.equal(dotted.warnings.count, 0);
   });
 
-  it('skips a domain check even when a table is literally named -', async () => {
+  it('keeps a quoted check for a table named -', async () => {
+    const built = await fetchPostgresSchemaDoc(
+      pgScript({
+        columns: [pgColumn('-', 'channel', { data_type: 'text', udt_name: 'text' })],
+        checks: [{ table_name: '"-"', check_def: "CHECK (channel IN ('table_kept', 'x'))" }],
+      }).query,
+    );
+    assert.match(built.schemaDoc, /CREATE TABLE - \(/);
+    assert.match(built.schemaDoc, /table_kept/);
+    assert.equal(built.warnings.count, 0);
+  });
+
+  it('skips a bare - check row', async () => {
     const built = await fetchPostgresSchemaDoc(
       pgScript({
         columns: [pgColumn('-', 'channel', { data_type: 'text', udt_name: 'text' })],
@@ -1481,7 +1522,7 @@ describe('check-row warnings', () => {
 });
 
 const EMPTY_FK_WARNING =
-  'dropped 1 foreign-key row(s) with an empty (zero-length) constraint or column name';
+  'dropped 1 foreign-key row(s) with an empty or whitespace-only constraint or column name';
 
 describe('mysql maxTables', () => {
   const columns = [mysqlColumn('orders', 'id'), mysqlColumn('orders', 'name'), mysqlColumn('customers', 'id')];
@@ -1583,20 +1624,53 @@ describe('option object and signal', () => {
       calls += 1;
       return [pgColumn('regions')];
     };
-    for (const signal of [{}, 'x']) {
+    const badSignals = [{}, 'x', 1, { aborted: false }];
+    for (const signal of badSignals) {
       calls = 0;
       const err = await rejected(() =>
-        fetchPostgresSchemaDoc(query, { signal: signal as unknown as AbortSignal }),
+        fetchPostgresSchemaDoc(query, { signal: signal as never }),
       );
       assert.equal(err.message, 'pg.columns: signal must be an AbortSignal');
       assert.equal(calls, 0);
     }
-    calls = 0;
-    const mysqlErr = await rejected(() =>
-      fetchMysqlSchemaDoc(query, { database: 'app', signal: {} as unknown as AbortSignal }),
+    for (const signal of badSignals) {
+      calls = 0;
+      const mysqlErr = await rejected(() =>
+        fetchMysqlSchemaDoc(query, { database: 'app', signal: signal as never }),
+      );
+      assert.equal(mysqlErr.message, 'mysql.columns: signal must be an AbortSignal');
+      assert.equal(calls, 0);
+    }
+  });
+
+  it('accepts AbortSignal, AbortSignal.timeout, and a duck-typed signal', async () => {
+    const duck = { aborted: false, throwIfAborted() {} };
+    const signals = [new AbortController().signal, AbortSignal.timeout(60_000), duck];
+    for (const signal of signals) {
+      const built = await fetchPostgresSchemaDoc(pgScript({ columns: [pgColumn('regions')] }).query, {
+        signal,
+      });
+      assert.match(built.schemaDoc, /CREATE TABLE regions \(/);
+    }
+    for (const signal of [new AbortController().signal, AbortSignal.timeout(60_000), duck]) {
+      const built = await fetchMysqlSchemaDoc(
+        mysqlScript('app', { columns: [mysqlColumn('regions')] }).query,
+        { database: 'app', signal },
+      );
+      assert.match(built.schemaDoc, /CREATE TABLE regions \(/);
+    }
+  });
+
+  it('accepts signal null as no signal', async () => {
+    const pg = await fetchPostgresSchemaDoc(pgScript({ columns: [pgColumn('regions')] }).query, {
+      signal: null,
+    });
+    assert.match(pg.schemaDoc, /CREATE TABLE regions \(/);
+    const mysql = await fetchMysqlSchemaDoc(
+      mysqlScript('app', { columns: [mysqlColumn('regions')] }).query,
+      { database: 'app', signal: null },
     );
-    assert.equal(mysqlErr.message, 'mysql.columns: signal must be an AbortSignal');
-    assert.equal(calls, 0);
+    assert.match(mysql.schemaDoc, /CREATE TABLE regions \(/);
   });
 
   it('rejects bad allowEmpty and includeTables values before any query', async () => {
@@ -1768,60 +1842,165 @@ describe('empty foreign-key identifiers', () => {
     }
   });
 
-  it('keeps whitespace-only foreign-key names', async () => {
-    const spaced = await fetchPostgresSchemaDoc(
+  it('drops whitespace-only foreign-key names and keeps surrounding spaces', async () => {
+    const pgFields = ['constraint_name', 'from_column', 'to_column'] as const;
+    for (const field of pgFields) {
+      for (const value of ['  ', '\t']) {
+        const built = await fetchPostgresSchemaDoc(
+          pgScript({
+            columns: pgColumns,
+            foreignKeys: [
+              {
+                ...pgFk({
+                  fromTable: 'child',
+                  fromColumn: 'id',
+                  toTable: 'parent',
+                  toColumn: 'id',
+                  ordinal: 1,
+                }),
+                [field]: value,
+              },
+            ],
+          }).query,
+        );
+        assert.equal(built.warnings.count, 1, `${field} ${JSON.stringify(value)}`);
+        assert.equal(built.warnings.messages[0], EMPTY_FK_WARNING, field);
+        assert.doesNotMatch(built.schemaDoc, /FOREIGN KEY/);
+      }
+    }
+
+    const mysqlFields = ['CONSTRAINT_NAME', 'COLUMN_NAME', 'REFERENCED_COLUMN_NAME'] as const;
+    for (const field of mysqlFields) {
+      for (const value of ['  ', '\t']) {
+        const built = await fetchMysqlSchemaDoc(
+          mysqlScript('app', {
+            columns: mysqlColumns,
+            foreignKeys: [
+              {
+                ...mysqlFk({
+                  fromTable: 'child',
+                  fromColumn: 'id',
+                  toTable: 'parent',
+                  toColumn: 'id',
+                  ordinal: 1,
+                }),
+                [field]: value,
+              },
+            ],
+          }).query,
+          { database: 'app' },
+        );
+        assert.equal(built.warnings.count, 1, `${field} ${JSON.stringify(value)}`);
+        assert.equal(built.warnings.messages[0], EMPTY_FK_WARNING, field);
+        assert.doesNotMatch(built.schemaDoc, /FOREIGN KEY/);
+      }
+    }
+
+    const padded = await fetchPostgresSchemaDoc(
       pgScript({
         columns: pgColumns,
         foreignKeys: [
           pgFk({
             fromTable: 'child',
-            fromColumn: 'id',
+            fromColumn: ' id ',
             toTable: 'parent',
             toColumn: 'id',
             ordinal: 1,
-            name: '  ',
+            name: ' fk ',
           }),
         ],
       }).query,
     );
-    assert.match(spaced.schemaDoc, /FOREIGN KEY/);
-    assert.equal(spaced.warnings.count, 0);
+    assert.match(padded.schemaDoc, /CONSTRAINT {2}fk {2}FOREIGN KEY \( id \)/);
+    assert.equal(padded.warnings.count, 0);
 
-    const tabbed = await fetchPostgresSchemaDoc(
-      pgScript({
-        columns: pgColumns,
-        foreignKeys: [
-          pgFk({
-            fromTable: 'child',
-            fromColumn: '\t',
-            toTable: 'parent',
-            toColumn: 'id',
-            ordinal: 1,
-          }),
-        ],
-      }).query,
-    );
-    assert.match(tabbed.schemaDoc, /FOREIGN KEY/);
-    assert.equal(tabbed.warnings.count, 0);
-
-    const mysqlSpaced = await fetchMysqlSchemaDoc(
+    const mysqlPadded = await fetchMysqlSchemaDoc(
       mysqlScript('app', {
         columns: mysqlColumns,
         foreignKeys: [
           mysqlFk({
             fromTable: 'child',
-            fromColumn: '  ',
+            fromColumn: 'id',
             toTable: 'parent',
-            toColumn: '\t',
+            toColumn: ' id ',
             ordinal: 1,
-            name: '  ',
+            name: ' fk ',
           }),
         ],
       }).query,
       { database: 'app' },
     );
-    assert.match(mysqlSpaced.schemaDoc, /FOREIGN KEY/);
-    assert.equal(mysqlSpaced.warnings.count, 0);
+    assert.match(mysqlPadded.schemaDoc, /CONSTRAINT {2}fk {2}FOREIGN KEY \(id\) REFERENCES parent \( id \)/);
+    assert.equal(mysqlPadded.warnings.count, 0);
+  });
+
+  it('keeps the other table when the same constraint name has an empty column', async () => {
+    const pg = await fetchPostgresSchemaDoc(
+      pgScript({
+        columns: [pgColumn('child', 'id'), pgColumn('other', 'id'), pgColumn('parent', 'id')],
+        foreignKeys: [
+          pgFk({
+            fromTable: 'child',
+            fromColumn: '',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+            name: 'fk_shared',
+          }),
+          pgFk({
+            fromTable: 'other',
+            fromColumn: 'id',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+            name: 'fk_shared',
+          }),
+        ],
+      }).query,
+    );
+    assert.equal(pg.warnings.count, 1);
+    assert.equal(pg.warnings.messages[0], EMPTY_FK_WARNING);
+    assert.equal(pg.schemaDoc.match(/FOREIGN KEY/g)?.length, 1);
+    const pgBlocks = pg.schemaDoc.split('\n\n');
+    const pgChild = pgBlocks.find((block) => block.startsWith('CREATE TABLE child ('));
+    const pgOther = pgBlocks.find((block) => block.startsWith('CREATE TABLE other ('));
+    assert.ok(pgChild);
+    assert.match(pgOther ?? '', /CONSTRAINT fk_shared FOREIGN KEY \(id\) REFERENCES parent \(id\)/);
+    assert.doesNotMatch(pgChild, /FOREIGN KEY/);
+
+    const mysql = await fetchMysqlSchemaDoc(
+      mysqlScript('app', {
+        columns: [mysqlColumn('child', 'id'), mysqlColumn('other', 'id'), mysqlColumn('parent', 'id')],
+        foreignKeys: [
+          mysqlFk({
+            fromTable: 'child',
+            fromColumn: '',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+            name: 'fk_shared',
+          }),
+          mysqlFk({
+            fromTable: 'other',
+            fromColumn: 'id',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+            name: 'fk_shared',
+          }),
+        ],
+      }).query,
+      { database: 'app' },
+    );
+    assert.equal(mysql.warnings.count, 1);
+    assert.equal(mysql.warnings.messages[0], EMPTY_FK_WARNING);
+    assert.equal(mysql.schemaDoc.match(/FOREIGN KEY/g)?.length, 1);
+    const mysqlBlocks = mysql.schemaDoc.split('\n\n');
+    const mysqlChild = mysqlBlocks.find((block) => block.startsWith('CREATE TABLE child ('));
+    const mysqlOther = mysqlBlocks.find((block) => block.startsWith('CREATE TABLE other ('));
+    assert.ok(mysqlChild);
+    assert.match(mysqlOther ?? '', /CONSTRAINT fk_shared FOREIGN KEY \(id\) REFERENCES parent \(id\)/);
+    assert.doesNotMatch(mysqlChild, /FOREIGN KEY/);
   });
 });
 
