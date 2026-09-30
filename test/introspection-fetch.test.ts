@@ -694,6 +694,19 @@ describe('failures', () => {
     assert.equal(earlyErr.name, 'AbortError');
     assert.equal(earlyCalls, 0);
 
+    const abortedMysql = new AbortController();
+    abortedMysql.abort();
+    const beforeMysql = { calls: 0, signal: abortedMysql.signal };
+    const mysqlEarly: QueryFn = async () => {
+      beforeMysql.calls += 1;
+      return [];
+    };
+    const beforeMysqlErr = await rejected(() =>
+      fetchMysqlSchemaDoc(mysqlEarly, { database: 'app', signal: beforeMysql.signal }),
+    );
+    assert.equal(beforeMysqlErr.name, 'AbortError');
+    assert.equal(beforeMysql.calls, 0);
+
     const controller = new AbortController();
     let calls = 0;
     const query: QueryFn = async () => {

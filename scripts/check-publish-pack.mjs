@@ -13,14 +13,22 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const tempDirs = [];
+
+function removeTempDirs() {
+  while (tempDirs.length > 0) {
+    rmSync(tempDirs.pop(), { recursive: true, force: true });
+  }
+}
 
 function fail(message) {
+  removeTempDirs();
   console.error(message);
   process.exit(1);
 }
@@ -35,7 +43,10 @@ function walkFiles(absDir, relDir) {
   for (const name of names) {
     const abs = path.join(absDir, name);
     const rel = relDir ? `${relDir}/${name}` : name;
-    const info = statSync(abs);
+    const info = lstatSync(abs);
+    if (info.isSymbolicLink()) {
+      fail(`${rel} is not a regular file`);
+    }
     if (info.isDirectory()) {
       files.push(...walkFiles(abs, rel));
       continue;
@@ -128,10 +139,12 @@ function checkManifest(version) {
 
 function fileHashes(tarball) {
   const dir = mkdtempSync(path.join(tmpdir(), 'publish-pack-'));
+  tempDirs.push(dir);
   try {
     const extracted = spawnSync('tar', ['-xzf', tarball, '-C', dir], { encoding: 'utf8' });
     if (extracted.status !== 0) {
-      fail(extracted.stderr || `failed to extract ${tarball}`);
+      const detail = (extracted.stderr || extracted.stdout || '').trim();
+      fail(`failed to extract ${tarball}${detail ? `: ${detail}` : ''}`);
     }
     const packageDir = path.join(dir, 'package');
     let info;
@@ -148,7 +161,7 @@ function fileHashes(tarball) {
     }
     return hashes;
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeTempDirs();
   }
 }
 
@@ -158,6 +171,9 @@ function checkContents(publishedTarball, localTarball) {
   }
   const published = fileHashes(publishedTarball);
   const local = fileHashes(localTarball);
+  if (published.size === 0 || local.size === 0) {
+    fail('packed tarball has 0 files');
+  }
   const keys = new Set([...published.keys(), ...local.keys()]);
   const problems = [];
   for (const key of [...keys].sort()) {
