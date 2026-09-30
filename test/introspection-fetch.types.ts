@@ -25,7 +25,10 @@ type _params = Expect<Equal<QueryParams[1], readonly unknown[] | undefined>>;
 type Result = Awaited<ReturnType<typeof fetchPostgresSchemaDoc>>;
 type _result = Expect<Equal<Result, SchemaDocFetchResult>>;
 type _warnings = Expect<
-  Equal<IntrospectionWarnings, { count: number; messages: readonly string[] }>
+  Equal<
+    IntrospectionWarnings,
+    { count: number; messages: readonly string[]; unmatched: readonly string[] }
+  >
 >;
 type _schemaDoc = Expect<Equal<SchemaDocFetchResult['schemaDoc'], string>>;
 type _tableCount = Expect<Equal<SchemaDocFetchResult['tableCount'], number>>;
@@ -65,6 +68,7 @@ function optionsProbe(): void {
   const options = {
     includeTables: ['orders'],
     excludeTables: ['secret_accounts'],
+    strictFilters: false,
     maxTables: 10,
     allowEmpty: false,
     signal: new AbortController().signal,

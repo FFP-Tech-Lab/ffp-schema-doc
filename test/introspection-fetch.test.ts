@@ -209,7 +209,7 @@ describe('golden replay', () => {
     const built = await fetchPostgresSchemaDoc(script.query);
     assert.equal(built.schemaDoc, readText(path.join(dir, 'schema-doc-with-fks.txt')));
     assert.equal(built.tableCount, 6);
-    assert.deepEqual(built.warnings, { count: 0, messages: [] });
+    assert.deepEqual(built.warnings, { count: 0, messages: [], unmatched: [] });
     assert.deepEqual(
       script.calls.map((call) => call.sql),
       PG_ORDER,
@@ -450,7 +450,17 @@ describe('query shape', () => {
     });
     assert.equal(
       (await rejected(() => fetchPostgresSchemaDoc(badOrdinal.query))).message,
-      'pg.foreignKeys: ordinal_position must be a number, numeric string, or bigint',
+      'pg.foreignKeys: ordinal_position must be a positive integer',
+    );
+  });
+
+  it('rejects null for a required string field', async () => {
+    const script = pgScript({
+      columns: [pgColumn('regions', 'id', { table_name: null })],
+    });
+    assert.equal(
+      (await rejected(() => fetchPostgresSchemaDoc(script.query))).message,
+      'pg.columns: table_name must be a string',
     );
   });
 });
@@ -727,6 +737,19 @@ describe('adapters', () => {
     assert.equal(err.message, 'pg query result has no rows array');
   });
 
+  it('calls pg query with arguments.length exactly 1', async () => {
+    const seenLengths: number[] = [];
+    const query = pgQueryFn({
+      query: async function query(sql: string) {
+        seenLengths.push(arguments.length);
+        if (sql === PG_COLUMNS_SQL) return { rows: [pgColumn('regions')] };
+        return { rows: [] };
+      },
+    });
+    await fetchPostgresSchemaDoc(query);
+    assert.deepEqual(seenLengths, [1, 1, 1, 1]);
+  });
+
   it('mysql2QueryFn unwraps the promise tuple', async () => {
     const seen: unknown[] = [];
     const query = mysql2QueryFn({
@@ -761,33 +784,340 @@ describe('adapters', () => {
   });
 });
 
+describe('unmatched table filters', () => {
+  it('throws when a misspelled excludeTables name matches no fetched table', async () => {
+    const script = pgScript({
+      columns: [pgColumn('secret_accounts', 'id'), pgColumn('orders', 'id')],
+    });
+    const err = await rejected(() =>
+      fetchPostgresSchemaDoc(script.query, { excludeTables: ['secret_acounts'] }),
+    );
+    assert.equal(err.message, 'pg.columns: unmatched excludeTables: secret_acounts');
+
+    const wrongCase = await rejected(() =>
+      fetchPostgresSchemaDoc(pgScript({ columns: [pgColumn('Orders')] }).query, {
+        excludeTables: ['orders'],
+      }),
+    );
+    assert.equal(wrongCase.message, 'pg.columns: unmatched excludeTables: orders');
+
+    const mysqlErr = await rejected(() =>
+      fetchMysqlSchemaDoc(mysqlScript('app', { columns: [mysqlColumn('orders')] }).query, {
+        database: 'app',
+        excludeTables: ['Orders'],
+      }),
+    );
+    assert.equal(mysqlErr.message, 'mysql.columns: unmatched excludeTables: Orders');
+  });
+
+  it('downgrades an unmatched excludeTables name to a warning when strictFilters is false', async () => {
+    const script = pgScript({
+      columns: [pgColumn('secret_accounts', 'id'), pgColumn('orders', 'id')],
+    });
+    const built = await fetchPostgresSchemaDoc(script.query, {
+      excludeTables: ['secret_acounts'],
+      strictFilters: false,
+    });
+    assert.match(built.schemaDoc, /CREATE TABLE secret_accounts \(/);
+    assert.deepEqual(built.warnings.unmatched, ['secret_acounts']);
+    assert.match(built.warnings.messages.join('\n'), /unmatched filter name\(s\): secret_acounts/);
+
+    const stillExcluded = await fetchPostgresSchemaDoc(
+      pgScript({
+        columns: [pgColumn('secret_accounts'), pgColumn('orders')],
+      }).query,
+      { excludeTables: ['secret_accounts'], strictFilters: false },
+    );
+    assert.doesNotMatch(stillExcluded.schemaDoc, /secret_accounts/);
+    assert.deepEqual(stillExcluded.warnings.unmatched, []);
+  });
+
+  it('warns on an unmatched includeTables name and throws when strictFilters is true', async () => {
+    const columns = [pgColumn('orders', 'id')];
+    const warned = await fetchPostgresSchemaDoc(pgScript({ columns }).query, {
+      includeTables: ['typo_b', 'orders', 'typo_a', 'typo_b'],
+    });
+    assert.match(warned.schemaDoc, /CREATE TABLE orders \(/);
+    assert.doesNotMatch(warned.schemaDoc, /typo/);
+    assert.deepEqual(warned.warnings.unmatched, ['typo_b', 'typo_a']);
+    assert.equal(warned.warnings.count, 2);
+    assert.match(warned.warnings.messages.join('\n'), /unmatched filter name\(s\): typo_b, typo_a/);
+
+    const strictInclude = await rejected(() =>
+      fetchPostgresSchemaDoc(pgScript({ columns }).query, {
+        includeTables: ['orders', 'typo'],
+        strictFilters: true,
+      }),
+    );
+    assert.equal(strictInclude.message, 'pg.columns: unmatched includeTables: typo');
+
+    const both = await rejected(() =>
+      fetchPostgresSchemaDoc(pgScript({ columns }).query, {
+        includeTables: ['orders', 'typo'],
+        excludeTables: ['bad_ex'],
+        strictFilters: true,
+      }),
+    );
+    assert.equal(
+      both.message,
+      'pg.columns: unmatched excludeTables: bad_ex; unmatched includeTables: typo',
+    );
+  });
+});
+
+describe('row validation', () => {
+  it('pg.columns rejects an empty table_name and an is_nullable other than YES or NO', async () => {
+    const emptyName = pgScript({
+      columns: [pgColumn('orders', 'id', { table_name: '' })],
+    });
+    assert.equal(
+      (await rejected(() => fetchPostgresIntrospectionRows(emptyName.query))).message,
+      'pg.columns: table_name must be a non-empty string',
+    );
+    const badFlag = pgScript({
+      columns: [pgColumn('orders', 'id', { is_nullable: 'yes' })],
+    });
+    assert.equal(
+      (await rejected(() => fetchPostgresIntrospectionRows(badFlag.query))).message,
+      'pg.columns: is_nullable must be YES or NO',
+    );
+  });
+
+  it('pg.nativeEnums rejects a null enumlabel', async () => {
+    const script = pgScript({
+      columns: [pgColumn('orders', 'status', { udt_name: 'status' })],
+      nativeEnums: [{ typname: 'status', enumlabel: null }],
+    });
+    assert.equal(
+      (await rejected(() => fetchPostgresIntrospectionRows(script.query))).message,
+      'pg.nativeEnums: enumlabel must be a string',
+    );
+  });
+
+  it('pg.checks rejects an empty table_name', async () => {
+    const script = pgScript({
+      columns: [pgColumn('orders')],
+      checks: [{ table_name: '', check_def: CHANNEL_CHECK }],
+    });
+    assert.equal(
+      (await rejected(() => fetchPostgresIntrospectionRows(script.query))).message,
+      'pg.checks: table_name must be a non-empty string',
+    );
+  });
+
+  it('pg.foreignKeys rejects ordinal 0, negatives, and fractions', async () => {
+    for (const ordinal of [0, -1, 1.5, 0n, -1n, '0', '-1', '1.5']) {
+      const script = pgScript({
+        columns: [pgColumn('child'), pgColumn('parent')],
+        foreignKeys: [
+          pgFk({
+            fromTable: 'child',
+            fromColumn: 'id',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal,
+          }),
+        ],
+      });
+      assert.equal(
+        (await rejected(() => fetchPostgresIntrospectionRows(script.query))).message,
+        'pg.foreignKeys: ordinal_position must be a positive integer',
+        `ordinal ${String(ordinal)}`,
+      );
+    }
+  });
+
+  it('mysql.columns rejects an empty table_name and an is_nullable other than YES or NO', async () => {
+    const emptyName = mysqlScript('app', {
+      columns: [mysqlColumn('orders', 'id', { table_name: '' })],
+    });
+    assert.equal(
+      (await rejected(() => fetchMysqlIntrospectionRows(emptyName.query, { database: 'app' }))).message,
+      'mysql.columns: table_name must be a non-empty string',
+    );
+    const badFlag = mysqlScript('app', {
+      columns: [mysqlColumn('orders', 'id', { is_nullable: 'Yes' })],
+    });
+    assert.equal(
+      (await rejected(() => fetchMysqlIntrospectionRows(badFlag.query, { database: 'app' }))).message,
+      'mysql.columns: is_nullable must be YES or NO',
+    );
+  });
+
+  it('mysql.foreignKeys rejects ordinal 0, negatives, and fractions', async () => {
+    for (const ordinal of [0, -2, 1.5, '0', '1.5']) {
+      const script = mysqlScript('app', {
+        columns: [mysqlColumn('child'), mysqlColumn('parent')],
+        foreignKeys: [
+          mysqlFk({
+            fromTable: 'child',
+            fromColumn: 'id',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal,
+          }),
+        ],
+      });
+      assert.equal(
+        (await rejected(() => fetchMysqlIntrospectionRows(script.query, { database: 'app' }))).message,
+        'mysql.foreignKeys: ORDINAL_POSITION must be a positive integer',
+        `ordinal ${String(ordinal)}`,
+      );
+    }
+  });
+
+  it('rejects nestTables-style rows', async () => {
+    const nestedPg = pgScript({
+      columns: [
+        {
+          table_name: 'orders',
+          columns: [pgColumn('orders')],
+        },
+      ],
+    });
+    assert.equal(
+      (await rejected(() => fetchPostgresIntrospectionRows(nestedPg.query))).message,
+      'pg.columns: missing key column_name',
+    );
+
+    const nestedMysql = mysqlScript('app', {
+      columns: [
+        {
+          table_name: 'orders',
+          columns: [mysqlColumn('orders')],
+        },
+      ],
+    });
+    assert.equal(
+      (await rejected(() => fetchMysqlIntrospectionRows(nestedMysql.query, { database: 'app' }))).message,
+      'mysql.columns: missing key column_name',
+    );
+
+    const nestedFk = pgScript({
+      columns: [pgColumn('child'), pgColumn('parent')],
+      foreignKeys: [
+        {
+          constraint_name: 'fk',
+          from_table: 'child',
+          columns: [{ from_column: 'id', to_column: 'id' }],
+          to_table: 'parent',
+        },
+      ],
+    });
+    assert.equal(
+      (await rejected(() => fetchPostgresIntrospectionRows(nestedFk.query))).message,
+      'pg.foreignKeys: missing key from_column',
+    );
+  });
+});
+
+describe('silent foreign-key column drops', () => {
+  it('counts a postgres foreign-key row with an empty from_column', async () => {
+    const script = pgScript({
+      columns: [pgColumn('child', 'id'), pgColumn('parent', 'id')],
+      foreignKeys: [
+        pgFk({
+          fromTable: 'child',
+          fromColumn: '',
+          toTable: 'parent',
+          toColumn: 'id',
+          ordinal: 1,
+        }),
+      ],
+    });
+    const fetched = await fetchPostgresIntrospectionRows(script.query);
+    assert.equal(fetched.foreignKeyRows.length, 0);
+    assert.match(
+      fetched.warnings.messages.join('\n'),
+      /dropped 1 foreign-key row\(s\) with an empty or null column name/,
+    );
+    assert.equal(fetched.warnings.messages.join('\n').includes('child'), false);
+    const built = await fetchPostgresSchemaDoc(script.query);
+    assert.doesNotMatch(built.schemaDoc, /FOREIGN KEY/);
+    assert.match(built.schemaDoc, /CREATE TABLE child \(/);
+  });
+
+  it('counts a mysql foreign-key row with a null REFERENCED_COLUMN_NAME', async () => {
+    const script = mysqlScript('app', {
+      columns: [mysqlColumn('child', 'id'), mysqlColumn('parent', 'id')],
+      foreignKeys: [
+        {
+          CONSTRAINT_NAME: 'fk',
+          TABLE_NAME: 'child',
+          COLUMN_NAME: 'id',
+          REFERENCED_TABLE_NAME: 'parent',
+          REFERENCED_COLUMN_NAME: null,
+          ORDINAL_POSITION: 1,
+        },
+      ],
+    });
+    const fetched = await fetchMysqlIntrospectionRows(script.query, { database: 'app' });
+    assert.equal(fetched.foreignKeyRows.length, 0);
+    assert.match(
+      fetched.warnings.messages.join('\n'),
+      /dropped 1 foreign-key row\(s\) with an empty or null column name/,
+    );
+    assert.equal(fetched.warnings.messages.join('\n').includes('parent'), false);
+    const built = await fetchMysqlSchemaDoc(script.query, { database: 'app' });
+    assert.doesNotMatch(built.schemaDoc, /FOREIGN KEY/);
+  });
+});
+
+describe('native enum filtering', () => {
+  it('drops native-enum rows whose type is not used by a kept table', async () => {
+    const script = pgScript({
+      columns: [pgColumn('orders', 'status', { data_type: 'USER-DEFINED', udt_name: 'order_status' })],
+      nativeEnums: [
+        { typname: 'order_status', enumlabel: 'open' },
+        { typname: 'hidden_status', enumlabel: 'secret_label' },
+      ],
+    });
+    const fetched = await fetchPostgresIntrospectionRows(script.query);
+    assert.deepEqual(
+      fetched.nativeEnumRows.map((row) => row.typname),
+      ['order_status'],
+    );
+    assert.match(fetched.warnings.messages.join('\n'), /dropped 1 native-enum row/);
+    assert.equal(fetched.warnings.messages.join('\n').includes('secret_label'), false);
+    assert.equal(fetched.warnings.messages.join('\n').includes('hidden_status'), false);
+    const built = await fetchPostgresSchemaDoc(script.query);
+    assert.match(built.schemaDoc, /open/);
+    assert.doesNotMatch(built.schemaDoc, /secret_label/);
+  });
+});
+
 describe('public exports', () => {
   it('exports the fetch helpers and SQL constants from the package entry', () => {
-    const api = publicApi as Record<string, unknown>;
-    for (const name of [
+    assert.deepEqual(Object.keys(publicApi), [
+      'INTROSPECTION_SQL',
+      'MAX_ENUM_VALUES',
+      'MYSQL_COLUMNS_SQL',
+      'MYSQL_FOREIGN_KEYS_SQL',
+      'PG_CHECKS_SQL',
       'PG_COLUMNS_SQL',
       'PG_FOREIGN_KEYS_SQL',
       'PG_NATIVE_ENUMS_SQL',
-      'PG_CHECKS_SQL',
-      'MYSQL_COLUMNS_SQL',
-      'MYSQL_FOREIGN_KEYS_SQL',
-    ]) {
-      assert.equal(typeof api[name], 'string');
-    }
-    assert.equal(typeof api.INTROSPECTION_SQL, 'object');
-    for (const name of [
-      'fetchPostgresIntrospectionRows',
-      'fetchMysqlIntrospectionRows',
-      'fetchPostgresSchemaDoc',
-      'fetchMysqlSchemaDoc',
-      'pgQueryFn',
-      'mysql2QueryFn',
-      'buildPostgresSchemaDoc',
-      'buildMysqlSchemaDoc',
+      'buildCheckEnumMap',
       'buildDdl',
+      'buildMysqlSchemaDoc',
+      'buildNativeEnumMap',
+      'buildPostgresSchemaDoc',
+      'columnEnumKey',
+      'fetchMysqlIntrospectionRows',
+      'fetchMysqlSchemaDoc',
+      'fetchPostgresIntrospectionRows',
+      'fetchPostgresSchemaDoc',
+      'filterValidTables',
+      'formatEnumComment',
+      'mapMysqlForeignKeyRows',
+      'mapPgForeignKeyRows',
+      'mergeEnumMaps',
+      'mysql2QueryFn',
+      'normalizeEnumValues',
+      'parseMysqlEnumType',
+      'parsePgCheckEnum',
       'parseSchemaDoc',
-    ]) {
-      assert.equal(typeof api[name], 'function');
-    }
+      'pgQueryFn',
+    ]);
   });
 });

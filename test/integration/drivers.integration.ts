@@ -16,7 +16,8 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { createConnection, createPool, type Connection, type Pool as MysqlPool } from 'mysql2/promise';
 import { Client, Pool } from 'pg';
-import { fetchMysqlSchemaDoc, fetchPostgresSchemaDoc, mysql2QueryFn, pgQueryFn } from '../../src/introspection-fetch';
+import { fetchMysqlIntrospectionRows, fetchMysqlSchemaDoc, fetchPostgresIntrospectionRows, fetchPostgresSchemaDoc, mysql2QueryFn, pgQueryFn } from '../../src/introspection-fetch';
+import { assertLoopbackHost } from './loopback-host';
 
 const PG_DATABASE = 'ffp_schema_doc_capture_pg';
 const MYSQL_DATABASE = 'ffp_schema_doc_capture_mysql';
@@ -45,8 +46,10 @@ function pgConfig(): {
   if (database !== PG_DATABASE) {
     throw new Error(`refusing to reset database ${database}`);
   }
+  const host = requiredEnv('SCHEMA_DOC_PG_HOST');
+  assertLoopbackHost(host);
   return {
-    host: requiredEnv('SCHEMA_DOC_PG_HOST'),
+    host,
     port: Number(requiredEnv('SCHEMA_DOC_PG_PORT')),
     user: requiredEnv('SCHEMA_DOC_PG_USER'),
     password: requiredEnv('SCHEMA_DOC_PG_PASSWORD'),
@@ -67,14 +70,27 @@ function mysqlConfig(): {
   if (database !== MYSQL_DATABASE) {
     throw new Error(`refusing to reset database ${database}`);
   }
+  const host = requiredEnv('SCHEMA_DOC_MYSQL_HOST');
+  assertLoopbackHost(host);
   return {
-    host: requiredEnv('SCHEMA_DOC_MYSQL_HOST'),
+    host,
     port: Number(requiredEnv('SCHEMA_DOC_MYSQL_PORT')),
     user: requiredEnv('SCHEMA_DOC_MYSQL_USER'),
     password: requiredEnv('SCHEMA_DOC_MYSQL_PASSWORD'),
     charset: 'utf8mb4',
     connectTimeout: 5000,
   };
+}
+
+async function dropPgReader(client: Client): Promise<void> {
+  const exists = await client.query(`SELECT 1 FROM pg_roles WHERE rolname = 'ffp_schema_doc_reader'`);
+  if (exists.rowCount === 0) return;
+  await client.query(`REVOKE ALL PRIVILEGES ON DATABASE ${PG_DATABASE} FROM ffp_schema_doc_reader`);
+  await client.query(`REVOKE ALL PRIVILEGES ON SCHEMA public FROM ffp_schema_doc_reader`);
+  await client.query(
+    `REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM ffp_schema_doc_reader`,
+  );
+  await client.query(`DROP ROLE ffp_schema_doc_reader`);
 }
 
 describe('postgres driver', () => {
@@ -84,6 +100,8 @@ describe('postgres driver', () => {
     const client = new Client(config);
     const pool = new Pool(config);
     const literal = readText(path.join('test', 'golden', 'synthetic-postgres', 'schema-doc.C.txt'));
+    const emptyWarnings = { count: 0, messages: [], unmatched: [] };
+    let reader: Client | undefined;
     try {
       await client.connect();
       await client.query('DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;');
@@ -99,9 +117,62 @@ describe('postgres driver', () => {
       assert.equal(fromPool.schemaDoc, literal, message);
       assert.equal(fromClient.tableCount, 6);
       assert.equal(fromPool.tableCount, 6);
-      assert.equal(fromClient.warnings.count, 0);
-      assert.equal(fromPool.warnings.count, 0);
+      assert.deepEqual(fromClient.warnings, emptyWarnings);
+      assert.deepEqual(fromPool.warnings, emptyWarnings);
+
+      const fetched = await fetchPostgresIntrospectionRows(pgQueryFn(client));
+      assert.ok(fetched.rows.some((row) => row.table_name === '订单'));
+      assert.ok(fetched.rows.some((row) => row.table_name === 'Orders'));
+      assert.ok(
+        fetched.checkRows.some(
+          (row) => row.table_name === '"Orders"' || row.table_name === 'public."Orders"',
+        ),
+      );
+
+      await dropPgReader(client);
+      await client.query(`CREATE ROLE ffp_schema_doc_reader LOGIN PASSWORD 'ffp_schema_doc_reader'`);
+      await client.query(`GRANT CONNECT ON DATABASE ${PG_DATABASE} TO ffp_schema_doc_reader`);
+      await client.query(`GRANT USAGE ON SCHEMA public TO ffp_schema_doc_reader`);
+      await client.query(`GRANT SELECT ON TABLE public.regions TO ffp_schema_doc_reader`);
+      reader = new Client({
+        ...config,
+        user: 'ffp_schema_doc_reader',
+        password: 'ffp_schema_doc_reader',
+      });
+      await reader.connect();
+      const limitedRows = await fetchPostgresIntrospectionRows(pgQueryFn(reader));
+      const limited = await fetchPostgresSchemaDoc(pgQueryFn(reader));
+      assert.deepEqual(
+        [...new Set(limitedRows.rows.map((row) => row.table_name))],
+        ['regions'],
+      );
+      assert.equal(limitedRows.foreignKeyRows.length, 0);
+      assert.equal(limitedRows.checkRows.length, 0);
+      assert.equal(limitedRows.nativeEnumRows.length, 0);
+      assert.equal(
+        limited.schemaDoc,
+        'CREATE TABLE regions (\n  id integer NOT NULL,\n  name text NOT NULL\n);',
+      );
+      assert.equal(limited.tableCount, 1);
+      assert.deepEqual(limited.warnings.unmatched, []);
+      assert.deepEqual(limited.warnings, {
+        count: 9,
+        messages: [
+          'dropped 3 foreign-key row(s) because one or both tables are not among the kept tables',
+          'dropped 3 check row(s) for tables that are not kept',
+          'dropped 3 native-enum row(s) whose type is not used by a kept table',
+        ],
+        unmatched: [],
+      });
+      const hidden = ['Orders', 'OrderLines', 'order_items', 'order_status_view', '订单', '已完成'];
+      for (const name of hidden) {
+        assert.equal(limited.schemaDoc.includes(name), false, name);
+        assert.equal(limited.warnings.messages.join('\n').includes(name), false, name);
+      }
+      assert.doesNotMatch(limited.schemaDoc, /FOREIGN KEY/);
     } finally {
+      await reader?.end();
+      await dropPgReader(client).catch(() => undefined);
       await client.end();
       await pool.end();
     }
@@ -139,8 +210,25 @@ describe('mysql2 driver', () => {
       assert.equal(fromPool.schemaDoc, literal, message);
       assert.equal(fromConnection.tableCount, 6);
       assert.equal(fromPool.tableCount, 6);
-      assert.equal(fromConnection.warnings.count, 0);
-      assert.equal(fromPool.warnings.count, 0);
+      const emptyWarnings = { count: 0, messages: [], unmatched: [] };
+      assert.deepEqual(fromConnection.warnings, emptyWarnings);
+      assert.deepEqual(fromPool.warnings, emptyWarnings);
+
+      const fetched = await fetchMysqlIntrospectionRows(mysql2QueryFn(connection), {
+        database: MYSQL_DATABASE,
+      });
+      assert.ok(fetched.rows.some((row) => row.table_name === '订单'));
+      assert.ok(fetched.rows.some((row) => row.table_name === 'Orders'));
+      assert.match(fromConnection.schemaDoc, /CREATE TABLE Orders \(/);
+      assert.match(fromConnection.schemaDoc, /CREATE TABLE 订单 \(/);
+      const [checkRows] = await connection.query(
+        `SELECT TABLE_NAME AS table_name
+         FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+         WHERE CONSTRAINT_SCHEMA = ? AND CONSTRAINT_TYPE = 'CHECK' AND TABLE_NAME = 'Orders'`,
+        [MYSQL_DATABASE],
+      );
+      const checks = checkRows as Array<{ table_name?: string }>;
+      assert.ok(checks.some((row) => row.table_name === 'Orders'));
     } finally {
       await connection.end();
       await pool.end();

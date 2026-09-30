@@ -28,10 +28,15 @@ export type QueryFn = (
   params?: readonly unknown[],
 ) => Promise<readonly Record<string, unknown>[]>;
 
-/** Counts rows the fetch layer dropped, plus short messages with no row values. */
+/**
+ * Rows the fetch layer dropped, caller filter names that matched nothing,
+ * and short messages. Messages do not include database row values.
+ * `unmatched` echoes the names the caller passed.
+ */
 export type IntrospectionWarnings = {
   count: number;
   messages: readonly string[];
+  unmatched: readonly string[];
 };
 
 export type FetchOptions = {
@@ -39,6 +44,13 @@ export type FetchOptions = {
   includeTables?: readonly string[];
   /** Exact table names. Applied after `includeTables` when both are set. */
   excludeTables?: readonly string[];
+  /**
+   * Unmatched `excludeTables` names throw unless this is `false`.
+   * Unmatched `includeTables` names are warnings unless this is `true`,
+   * which throws for those names too. `false` records an unmatched exclude
+   * name in `warnings` and does not remove a table.
+   */
+  strictFilters?: boolean;
   /**
    * Throw when the number of kept tables is greater than this.
    * The catalog is never truncated to the cap.
@@ -102,8 +114,9 @@ export type Mysql2Queryable = {
  * so the four result sets are not one snapshot. Non-public schemas are out
  * of scope: the shipped statements hardcode `public`, except the native-enum
  * statement, which has no schema predicate (same-named enum types merge by
- * `typname`). Row order is the order the database returns; table order
- * follows the database collation.
+ * `typname`). Returned native-enum rows are those whose `typname` equals
+ * `udt_name` on a kept column. Row order is the order the database returns;
+ * table order follows the database collation.
  */
 export async function fetchPostgresIntrospectionRows(
   query: QueryFn,
@@ -125,19 +138,26 @@ export async function fetchPostgresIntrospectionRows(
     await runQuery(query, 'pg.foreignKeys', PG_FOREIGN_KEYS_SQL),
   );
 
-  const keptColumns = selectColumnRows(columns, options);
-  const keptTables = tableNames(keptColumns);
+  const kept = resolveKeptColumns(columns, options, 'pg.columns');
+  const keptTables = tableNames(kept.rows);
   assertMaxTables('pg.columns', keptTables.size, options?.maxTables);
   assertColumnsPresent('pg', columns.length, keptTables.size, options?.allowEmpty === true);
 
   const checks = filterCheckRows(checkRows, keptTables);
   const foreignKeys = filterPgForeignKeys(foreignKeyRows, keptTables);
+  const nativeEnums = filterNativeEnumRows(nativeEnumRows, kept.rows);
   return {
-    rows: keptColumns,
-    nativeEnumRows,
+    rows: kept.rows,
+    nativeEnumRows: nativeEnums.rows,
     checkRows: checks.rows,
     foreignKeyRows: foreignKeys.rows,
-    warnings: warningsFor(foreignKeys.dropped, checks.dropped),
+    warnings: warningsFor({
+      droppedForeignKeys: foreignKeys.dropped,
+      droppedChecks: checks.dropped,
+      droppedEnums: nativeEnums.dropped,
+      emptyForeignKeyColumns: foreignKeys.emptyColumns,
+      unmatched: kept.unmatched,
+    }),
   };
 }
 
@@ -160,16 +180,22 @@ export async function fetchMysqlIntrospectionRows(
     await runQuery(query, 'mysql.foreignKeys', MYSQL_FOREIGN_KEYS_SQL, [database]),
   );
 
-  const keptColumns = selectColumnRows(columns, options);
-  const keptTables = tableNames(keptColumns);
+  const kept = resolveKeptColumns(columns, options, 'mysql.columns');
+  const keptTables = tableNames(kept.rows);
   assertMaxTables('mysql.columns', keptTables.size, options.maxTables);
   assertColumnsPresent('mysql', columns.length, keptTables.size, options.allowEmpty === true);
 
   const foreignKeys = filterMysqlForeignKeys(foreignKeyRows, keptTables);
   return {
-    rows: keptColumns,
+    rows: kept.rows,
     foreignKeyRows: foreignKeys.rows,
-    warnings: warningsFor(foreignKeys.dropped, 0),
+    warnings: warningsFor({
+      droppedForeignKeys: foreignKeys.dropped,
+      droppedChecks: 0,
+      droppedEnums: 0,
+      emptyForeignKeyColumns: foreignKeys.emptyColumns,
+      unmatched: kept.unmatched,
+    }),
   };
 }
 
@@ -310,18 +336,34 @@ function readNullableString(
   return value;
 }
 
+function readTableName(row: Record<string, unknown>, queryKey: string): string {
+  const value = readString(row, queryKey, 'table_name');
+  if (value === '') {
+    throw new Error(`${queryKey}: table_name must be a non-empty string`);
+  }
+  return value;
+}
+
+function readNullableFlag(row: Record<string, unknown>, queryKey: string): 'YES' | 'NO' {
+  const value = readString(row, queryKey, 'is_nullable');
+  if (value === 'YES' || value === 'NO') return value;
+  throw new Error(`${queryKey}: is_nullable must be YES or NO`);
+}
+
 function readOrdinal(row: Record<string, unknown>, queryKey: string, field: string): number {
   if (!Object.hasOwn(row, field)) {
     throw new Error(`${queryKey}: missing key ${field}`);
   }
   const value = row[field];
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'bigint') {
-    const asNumber = Number(value);
-    if (Number.isFinite(asNumber)) return asNumber;
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 1) return value;
+  if (typeof value === 'bigint' && value >= 1n && value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+    return Number(value);
   }
-  if (typeof value === 'string' && /^-?\d+$/.test(value)) return Number(value);
-  throw new Error(`${queryKey}: ${field} must be a number, numeric string, or bigint`);
+  if (typeof value === 'string' && /^[1-9]\d*$/.test(value)) {
+    const asNumber = Number(value);
+    if (Number.isSafeInteger(asNumber)) return asNumber;
+  }
+  throw new Error(`${queryKey}: ${field} must be a positive integer`);
 }
 
 // Every row gets a key check and a typeof check. That is cheap, and a missing
@@ -332,10 +374,10 @@ function mapPgColumns(raw: readonly unknown[]): PgColumnQueryRow[] {
   for (let i = 0; i < raw.length; i += 1) {
     const row = asRow(raw[i], 'pg.columns', 'table_name');
     rows.push({
-      table_name: readString(row, 'pg.columns', 'table_name'),
+      table_name: readTableName(row, 'pg.columns'),
       column_name: readString(row, 'pg.columns', 'column_name'),
       data_type: readString(row, 'pg.columns', 'data_type'),
-      is_nullable: readString(row, 'pg.columns', 'is_nullable'),
+      is_nullable: readNullableFlag(row, 'pg.columns'),
       udt_name: readString(row, 'pg.columns', 'udt_name'),
     });
   }
@@ -359,7 +401,7 @@ function mapPgChecks(raw: readonly unknown[]): PgCheckQueryRow[] {
   for (let i = 0; i < raw.length; i += 1) {
     const row = asRow(raw[i], 'pg.checks', 'table_name');
     rows.push({
-      table_name: readString(row, 'pg.checks', 'table_name'),
+      table_name: readTableName(row, 'pg.checks'),
       check_def: readString(row, 'pg.checks', 'check_def'),
     });
   }
@@ -387,10 +429,10 @@ function mapMysqlColumns(raw: readonly unknown[]): MysqlColumnQueryRow[] {
   for (let i = 0; i < raw.length; i += 1) {
     const row = asRow(raw[i], 'mysql.columns', 'table_name');
     rows.push({
-      table_name: readString(row, 'mysql.columns', 'table_name'),
+      table_name: readTableName(row, 'mysql.columns'),
       column_name: readString(row, 'mysql.columns', 'column_name'),
       data_type: readString(row, 'mysql.columns', 'data_type'),
-      is_nullable: readString(row, 'mysql.columns', 'is_nullable'),
+      is_nullable: readNullableFlag(row, 'mysql.columns'),
       column_type: readString(row, 'mysql.columns', 'column_type'),
     });
   }
@@ -419,6 +461,55 @@ function mapMysqlForeignKeys(raw: readonly unknown[]): MysqlForeignKeyQueryRow[]
     });
   }
   return rows;
+}
+
+function resolveKeptColumns<T extends { table_name: string }>(
+  rows: readonly T[],
+  options: FetchOptions | undefined,
+  queryKey: string,
+): { rows: T[]; unmatched: readonly string[] } {
+  const fetched = tableNames(rows);
+  const unmatchedInclude = namesNotFetched(options?.includeTables, fetched);
+  const unmatchedExclude = namesNotFetched(options?.excludeTables, fetched);
+  const strictFilters = options?.strictFilters;
+  const failExclude = strictFilters !== false && unmatchedExclude.length > 0;
+  const failInclude = strictFilters === true && unmatchedInclude.length > 0;
+  if (failExclude || failInclude) {
+    const parts: string[] = [];
+    if (failExclude) parts.push(`unmatched excludeTables: ${unmatchedExclude.join(', ')}`);
+    if (failInclude) parts.push(`unmatched includeTables: ${unmatchedInclude.join(', ')}`);
+    throw new Error(`${queryKey}: ${parts.join('; ')}`);
+  }
+  return {
+    rows: selectColumnRows(rows, options),
+    unmatched: dedupeNames([...unmatchedInclude, ...unmatchedExclude]),
+  };
+}
+
+function namesNotFetched(
+  requested: readonly string[] | undefined,
+  fetched: ReadonlySet<string>,
+): string[] {
+  if (requested === undefined) return [];
+  const unmatched: string[] = [];
+  const seen = new Set<string>();
+  for (const name of requested) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    if (!fetched.has(name)) unmatched.push(name);
+  }
+  return unmatched;
+}
+
+function dedupeNames(names: readonly string[]): string[] {
+  const unmatched: string[] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    unmatched.push(name);
+  }
+  return unmatched;
 }
 
 function selectColumnRows<T extends { table_name: string }>(
@@ -468,14 +559,16 @@ function filterCheckRows(
   return { rows: kept, dropped };
 }
 
-function filterPgForeignKeys(
-  rows: readonly PgForeignKeyQueryRow[],
-  keptTables: ReadonlySet<string>,
-): { rows: PgForeignKeyQueryRow[]; dropped: number } {
-  const kept: PgForeignKeyQueryRow[] = [];
+function filterNativeEnumRows(
+  rows: readonly PgNativeEnumQueryRow[],
+  keptColumns: readonly { udt_name: string }[],
+): { rows: PgNativeEnumQueryRow[]; dropped: number } {
+  const used = new Set<string>();
+  for (const column of keptColumns) used.add(column.udt_name);
+  const kept: PgNativeEnumQueryRow[] = [];
   let dropped = 0;
   for (const row of rows) {
-    if (!keptTables.has(row.from_table) || !keptTables.has(row.to_table)) {
+    if (!used.has(row.typname)) {
       dropped += 1;
       continue;
     }
@@ -484,12 +577,34 @@ function filterPgForeignKeys(
   return { rows: kept, dropped };
 }
 
+function filterPgForeignKeys(
+  rows: readonly PgForeignKeyQueryRow[],
+  keptTables: ReadonlySet<string>,
+): { rows: PgForeignKeyQueryRow[]; dropped: number; emptyColumns: number } {
+  const kept: PgForeignKeyQueryRow[] = [];
+  let dropped = 0;
+  let emptyColumns = 0;
+  for (const row of rows) {
+    if (!keptTables.has(row.from_table) || !keptTables.has(row.to_table)) {
+      dropped += 1;
+      continue;
+    }
+    if (row.from_column === '' || row.to_column === '') {
+      emptyColumns += 1;
+      continue;
+    }
+    kept.push(row);
+  }
+  return { rows: kept, dropped, emptyColumns };
+}
+
 function filterMysqlForeignKeys(
   rows: readonly MysqlForeignKeyQueryRow[],
   keptTables: ReadonlySet<string>,
-): { rows: MysqlForeignKeyQueryRow[]; dropped: number } {
+): { rows: MysqlForeignKeyQueryRow[]; dropped: number; emptyColumns: number } {
   const kept: MysqlForeignKeyQueryRow[] = [];
   let dropped = 0;
+  let emptyColumns = 0;
   for (const row of rows) {
     if (
       row.REFERENCED_TABLE_NAME === null ||
@@ -499,22 +614,58 @@ function filterMysqlForeignKeys(
       dropped += 1;
       continue;
     }
+    if (
+      row.COLUMN_NAME === '' ||
+      row.REFERENCED_COLUMN_NAME === null ||
+      row.REFERENCED_COLUMN_NAME === ''
+    ) {
+      emptyColumns += 1;
+      continue;
+    }
     kept.push(row);
   }
-  return { rows: kept, dropped };
+  return { rows: kept, dropped, emptyColumns };
 }
 
-function warningsFor(droppedForeignKeys: number, droppedChecks: number): IntrospectionWarnings {
+function warningsFor(counts: {
+  droppedForeignKeys: number;
+  droppedChecks: number;
+  droppedEnums: number;
+  emptyForeignKeyColumns: number;
+  unmatched: readonly string[];
+}): IntrospectionWarnings {
   const messages: string[] = [];
-  if (droppedForeignKeys > 0) {
+  if (counts.droppedForeignKeys > 0) {
     messages.push(
-      `dropped ${droppedForeignKeys} foreign-key row(s) because one or both tables are not among the kept tables`,
+      `dropped ${counts.droppedForeignKeys} foreign-key row(s) because one or both tables are not among the kept tables`,
     );
   }
-  if (droppedChecks > 0) {
-    messages.push(`dropped ${droppedChecks} check row(s) for tables that are not kept`);
+  if (counts.droppedChecks > 0) {
+    messages.push(`dropped ${counts.droppedChecks} check row(s) for tables that are not kept`);
   }
-  return { count: droppedForeignKeys + droppedChecks, messages };
+  if (counts.droppedEnums > 0) {
+    messages.push(
+      `dropped ${counts.droppedEnums} native-enum row(s) whose type is not used by a kept table`,
+    );
+  }
+  if (counts.emptyForeignKeyColumns > 0) {
+    messages.push(
+      `dropped ${counts.emptyForeignKeyColumns} foreign-key row(s) with an empty or null column name`,
+    );
+  }
+  if (counts.unmatched.length > 0) {
+    messages.push(`unmatched filter name(s): ${counts.unmatched.join(', ')}`);
+  }
+  return {
+    count:
+      counts.droppedForeignKeys +
+      counts.droppedChecks +
+      counts.droppedEnums +
+      counts.emptyForeignKeyColumns +
+      counts.unmatched.length,
+    messages,
+    unmatched: counts.unmatched,
+  };
 }
 
 function assertMaxTables(queryKey: string, tableCount: number, maxTables: number | undefined): void {
