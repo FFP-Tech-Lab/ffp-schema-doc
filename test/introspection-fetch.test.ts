@@ -977,6 +977,68 @@ describe('row validation', () => {
     }
   });
 
+  it('rejects an empty or whitespace-only column table_name or column_name', async () => {
+    const blank = ['', ' ', '\t', '\n', '\u00A0'];
+    for (const table_name of blank) {
+      const script = pgScript({
+        columns: [pgColumn('orders', 'id', { table_name })],
+      });
+      const err = await rejected(() => fetchPostgresIntrospectionRows(script.query));
+      assert.equal(err.message, 'pg.columns: table_name must be a non-empty string');
+    }
+    for (const column_name of blank) {
+      const script = pgScript({
+        columns: [pgColumn('orders', 'id', { column_name })],
+      });
+      const err = await rejected(() => fetchPostgresIntrospectionRows(script.query));
+      assert.equal(err.message, 'pg.columns: column_name must be a non-empty string');
+      assert.equal(err.message.includes('orders'), false);
+    }
+    const nullColumn = pgScript({
+      columns: [pgColumn('orders', 'id', { column_name: null })],
+    });
+    assert.equal(
+      (await rejected(() => fetchPostgresIntrospectionRows(nullColumn.query))).message,
+      'pg.columns: column_name must be a string',
+    );
+    const kept = await fetchPostgresSchemaDoc(
+      pgScript({ columns: [pgColumn('orders', ' id ')] }).query,
+    );
+    assert.match(kept.schemaDoc, / {3}id {2}integer NOT NULL/);
+    assert.equal(kept.warnings.count, 0);
+    const zeroWidth = await fetchPostgresSchemaDoc(
+      pgScript({ columns: [pgColumn('\u200B', 'id\u200B')] }).query,
+    );
+    assert.match(zeroWidth.schemaDoc, /CREATE TABLE \u200B \(/);
+    assert.match(zeroWidth.schemaDoc, /id\u200B integer NOT NULL/);
+
+    for (const table_name of blank) {
+      const script = mysqlScript('app', {
+        columns: [mysqlColumn('orders', 'id', { table_name })],
+      });
+      const err = await rejected(() =>
+        fetchMysqlIntrospectionRows(script.query, { database: 'app' }),
+      );
+      assert.equal(err.message, 'mysql.columns: table_name must be a non-empty string');
+    }
+    for (const column_name of blank) {
+      const script = mysqlScript('app', {
+        columns: [mysqlColumn('orders', 'id', { column_name })],
+      });
+      const err = await rejected(() =>
+        fetchMysqlIntrospectionRows(script.query, { database: 'app' }),
+      );
+      assert.equal(err.message, 'mysql.columns: column_name must be a non-empty string');
+      assert.equal(err.message.includes('orders'), false);
+    }
+    const mysqlKept = await fetchMysqlSchemaDoc(
+      mysqlScript('app', { columns: [mysqlColumn('orders', ' id ')] }).query,
+      { database: 'app' },
+    );
+    assert.match(mysqlKept.schemaDoc, / {3}id {2}int NOT NULL/);
+    assert.equal(mysqlKept.warnings.count, 0);
+  });
+
   it('mysql.columns rejects an empty table_name and an is_nullable other than YES or NO', async () => {
     const emptyName = mysqlScript('app', {
       columns: [mysqlColumn('orders', 'id', { table_name: '' })],
@@ -1661,7 +1723,50 @@ describe('option object and signal', () => {
     }
   });
 
-  it('accepts signal null as no signal', async () => {
+  it('aborts before the first statement, between statements, and after the last statement', async () => {
+    async function checkpoint(
+      dialect: 'pg' | 'mysql',
+      when: 'before' | 'between' | 'after',
+    ): Promise<{ calls: number; name: string }> {
+      const controller = new AbortController();
+      if (when === 'before') controller.abort();
+      let calls = 0;
+      const query: QueryFn = async (sql) => {
+        calls += 1;
+        const lastSql = dialect === 'pg' ? PG_FOREIGN_KEYS_SQL : MYSQL_FOREIGN_KEYS_SQL;
+        if (when === 'between' && calls === 1) controller.abort();
+        if (when === 'after' && sql === lastSql) controller.abort();
+        if (dialect === 'pg' && sql === PG_COLUMNS_SQL) return [pgColumn('regions')];
+        if (dialect === 'mysql' && sql === MYSQL_COLUMNS_SQL) return [mysqlColumn('regions')];
+        return [];
+      };
+      const err = await rejected(() =>
+        dialect === 'pg'
+          ? fetchPostgresSchemaDoc(query, { signal: controller.signal })
+          : fetchMysqlSchemaDoc(query, { database: 'app', signal: controller.signal }),
+      );
+      assert.equal(err.name, 'AbortError', `${dialect} ${when}`);
+      assert.equal(err.message.includes('query failed'), false, `${dialect} ${when}`);
+      return { calls, name: err.name };
+    }
+
+    const beforePg = await checkpoint('pg', 'before');
+    assert.equal(beforePg.calls, 0);
+    const beforeMysql = await checkpoint('mysql', 'before');
+    assert.equal(beforeMysql.calls, 0);
+
+    const betweenPg = await checkpoint('pg', 'between');
+    assert.equal(betweenPg.calls, 1);
+    const betweenMysql = await checkpoint('mysql', 'between');
+    assert.equal(betweenMysql.calls, 1);
+
+    const afterPg = await checkpoint('pg', 'after');
+    assert.equal(afterPg.calls, PG_ORDER.length);
+    const afterMysql = await checkpoint('mysql', 'after');
+    assert.equal(afterMysql.calls, 2);
+  });
+
+  it('accepts an omitted signal and signal null as no signal', async () => {
     const pg = await fetchPostgresSchemaDoc(pgScript({ columns: [pgColumn('regions')] }).query, {
       signal: null,
     });
@@ -1671,6 +1776,14 @@ describe('option object and signal', () => {
       { database: 'app', signal: null },
     );
     assert.match(mysql.schemaDoc, /CREATE TABLE regions \(/);
+
+    const omittedPg = await fetchPostgresSchemaDoc(pgScript({ columns: [pgColumn('regions')] }).query);
+    assert.match(omittedPg.schemaDoc, /CREATE TABLE regions \(/);
+    const omittedMysql = await fetchMysqlSchemaDoc(
+      mysqlScript('app', { columns: [mysqlColumn('regions')] }).query,
+      { database: 'app' },
+    );
+    assert.match(omittedMysql.schemaDoc, /CREATE TABLE regions \(/);
   });
 
   it('rejects bad allowEmpty and includeTables values before any query', async () => {
@@ -1934,6 +2047,129 @@ describe('empty foreign-key identifiers', () => {
     assert.equal(mysqlPadded.warnings.count, 0);
   });
 
+  it('drops a foreign-key name that is only zero-width or other invisible characters', async () => {
+    const invisible = ['\u200B', '\u200C', '\u200D', '\uFEFF', '\u2060', ' \u200B\t', '\u200B\u200C'];
+    const pgFields = ['constraint_name', 'from_column', 'to_column'] as const;
+    for (const field of pgFields) {
+      for (const value of invisible) {
+        const built = await fetchPostgresSchemaDoc(
+          pgScript({
+            columns: pgColumns,
+            foreignKeys: [
+              {
+                ...pgFk({
+                  fromTable: 'child',
+                  fromColumn: 'id',
+                  toTable: 'parent',
+                  toColumn: 'id',
+                  ordinal: 1,
+                }),
+                [field]: value,
+              },
+            ],
+          }).query,
+        );
+        assert.equal(built.warnings.count, 1, `${field} ${JSON.stringify(value)}`);
+        assert.equal(built.warnings.messages[0], EMPTY_FK_WARNING, field);
+        assert.equal(built.warnings.messages.join('\n').includes(value), false);
+        assert.doesNotMatch(built.schemaDoc, /FOREIGN KEY/);
+      }
+    }
+
+    const mysqlFields = ['CONSTRAINT_NAME', 'COLUMN_NAME', 'REFERENCED_COLUMN_NAME'] as const;
+    for (const field of mysqlFields) {
+      for (const value of invisible) {
+        const built = await fetchMysqlSchemaDoc(
+          mysqlScript('app', {
+            columns: mysqlColumns,
+            foreignKeys: [
+              {
+                ...mysqlFk({
+                  fromTable: 'child',
+                  fromColumn: 'id',
+                  toTable: 'parent',
+                  toColumn: 'id',
+                  ordinal: 1,
+                }),
+                [field]: value,
+              },
+            ],
+          }).query,
+          { database: 'app' },
+        );
+        assert.equal(built.warnings.count, 1, `${field} ${JSON.stringify(value)}`);
+        assert.equal(built.warnings.messages[0], EMPTY_FK_WARNING, field);
+        assert.doesNotMatch(built.schemaDoc, /FOREIGN KEY/);
+      }
+    }
+
+    const composite = await fetchPostgresSchemaDoc(
+      pgScript({
+        columns: [pgColumn('child', 'a'), pgColumn('child', 'b'), pgColumn('parent', 'id')],
+        foreignKeys: [
+          pgFk({
+            fromTable: 'child',
+            fromColumn: 'a',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+            name: 'fk_ab',
+          }),
+          pgFk({
+            fromTable: 'child',
+            fromColumn: '\u200B',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 2,
+            name: 'fk_ab',
+          }),
+        ],
+      }).query,
+    );
+    assert.doesNotMatch(composite.schemaDoc, /FOREIGN KEY/);
+    assert.equal(composite.warnings.count, 2);
+
+    const visible = await fetchPostgresSchemaDoc(
+      pgScript({
+        columns: pgColumns,
+        foreignKeys: [
+          pgFk({
+            fromTable: 'child',
+            fromColumn: 'id\u200B',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+            name: 'fk\u200B',
+          }),
+        ],
+      }).query,
+    );
+    assert.equal(visible.warnings.count, 0);
+    assert.match(visible.schemaDoc, /CONSTRAINT fk\u200B FOREIGN KEY \(id\u200B\) REFERENCES parent \(id\)/);
+
+    const mysqlVisible = await fetchMysqlSchemaDoc(
+      mysqlScript('app', {
+        columns: mysqlColumns,
+        foreignKeys: [
+          mysqlFk({
+            fromTable: 'child',
+            fromColumn: 'id',
+            toTable: 'parent',
+            toColumn: 'id\u200D',
+            ordinal: 1,
+            name: 'fk\u2060',
+          }),
+        ],
+      }).query,
+      { database: 'app' },
+    );
+    assert.equal(mysqlVisible.warnings.count, 0);
+    assert.match(
+      mysqlVisible.schemaDoc,
+      /CONSTRAINT fk\u2060 FOREIGN KEY \(id\) REFERENCES parent \(id\u200D\)/,
+    );
+  });
+
   it('keeps the other table when the same constraint name has an empty column', async () => {
     const pg = await fetchPostgresSchemaDoc(
       pgScript({
@@ -2001,6 +2237,167 @@ describe('empty foreign-key identifiers', () => {
     assert.ok(mysqlChild);
     assert.match(mysqlOther ?? '', /CONSTRAINT fk_shared FOREIGN KEY \(id\) REFERENCES parent \(id\)/);
     assert.doesNotMatch(mysqlChild, /FOREIGN KEY/);
+  });
+});
+
+describe('mixed to_table groups', () => {
+  const pgChild = [pgColumn('child', 'a'), pgColumn('child', 'b')];
+  const mysqlChild = [mysqlColumn('child', 'a'), mysqlColumn('child', 'b')];
+
+  it('lets groupForeignKeys drop a kept mixed group and counts one unkept row', async () => {
+    const pgKept = await fetchPostgresSchemaDoc(
+      pgScript({
+        columns: [...pgChild, pgColumn('parent', 'id'), pgColumn('other', 'id')],
+        foreignKeys: [
+          pgFk({
+            fromTable: 'child',
+            fromColumn: 'a',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+            name: 'fk',
+          }),
+          pgFk({
+            fromTable: 'child',
+            fromColumn: 'b',
+            toTable: 'other',
+            toColumn: 'id',
+            ordinal: 2,
+            name: 'fk',
+          }),
+        ],
+      }).query,
+    );
+    assert.equal(pgKept.warnings.count, 0);
+    assert.equal(pgKept.schemaDoc.includes('FOREIGN KEY'), false);
+    assert.equal(
+      pgKept.schemaDoc,
+      'CREATE TABLE child (\n  a integer NOT NULL,\n  b integer NOT NULL\n);\n\nCREATE TABLE parent (\n  id integer NOT NULL\n);\n\nCREATE TABLE other (\n  id integer NOT NULL\n);',
+    );
+    const pgKeptRows = await fetchPostgresIntrospectionRows(
+      pgScript({
+        columns: [...pgChild, pgColumn('parent', 'id'), pgColumn('other', 'id')],
+        foreignKeys: [
+          pgFk({
+            fromTable: 'child',
+            fromColumn: 'a',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+            name: 'fk',
+          }),
+          pgFk({
+            fromTable: 'child',
+            fromColumn: 'b',
+            toTable: 'other',
+            toColumn: 'id',
+            ordinal: 2,
+            name: 'fk',
+          }),
+        ],
+      }).query,
+    );
+    assert.equal(pgKeptRows.foreignKeyRows.length, 2);
+    assert.equal(pgKeptRows.warnings.count, 0);
+
+    const pgPartial = await fetchPostgresSchemaDoc(
+      pgScript({
+        columns: [...pgChild, pgColumn('parent', 'id')],
+        foreignKeys: [
+          pgFk({
+            fromTable: 'child',
+            fromColumn: 'a',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+            name: 'fk',
+          }),
+          pgFk({
+            fromTable: 'child',
+            fromColumn: 'b',
+            toTable: 'other',
+            toColumn: 'id',
+            ordinal: 2,
+            name: 'fk',
+          }),
+        ],
+      }).query,
+    );
+    assert.equal(pgPartial.warnings.count, 1);
+    assert.match(
+      pgPartial.warnings.messages.join('\n'),
+      /dropped 1 foreign-key row\(s\) because one or both tables are not among the kept tables/,
+    );
+    assert.equal(pgPartial.warnings.messages.join('\n').includes('other'), false);
+    assert.equal(
+      pgPartial.schemaDoc,
+      'CREATE TABLE child (\n  a integer NOT NULL,\n  b integer NOT NULL,\n  CONSTRAINT fk FOREIGN KEY (a) REFERENCES parent (id)\n);\n\nCREATE TABLE parent (\n  id integer NOT NULL\n);',
+    );
+
+    const mysqlKept = await fetchMysqlSchemaDoc(
+      mysqlScript('app', {
+        columns: [...mysqlChild, mysqlColumn('parent', 'id'), mysqlColumn('other', 'id')],
+        foreignKeys: [
+          mysqlFk({
+            fromTable: 'child',
+            fromColumn: 'a',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+            name: 'fk',
+          }),
+          mysqlFk({
+            fromTable: 'child',
+            fromColumn: 'b',
+            toTable: 'other',
+            toColumn: 'id',
+            ordinal: 2,
+            name: 'fk',
+          }),
+        ],
+      }).query,
+      { database: 'app' },
+    );
+    assert.equal(mysqlKept.warnings.count, 0);
+    assert.equal(mysqlKept.schemaDoc.includes('FOREIGN KEY'), false);
+    assert.equal(
+      mysqlKept.schemaDoc,
+      'CREATE TABLE child (\n  a int NOT NULL,\n  b int NOT NULL\n);\n\nCREATE TABLE parent (\n  id int NOT NULL\n);\n\nCREATE TABLE other (\n  id int NOT NULL\n);',
+    );
+
+    const mysqlPartial = await fetchMysqlSchemaDoc(
+      mysqlScript('app', {
+        columns: [...mysqlChild, mysqlColumn('parent', 'id')],
+        foreignKeys: [
+          mysqlFk({
+            fromTable: 'child',
+            fromColumn: 'a',
+            toTable: 'parent',
+            toColumn: 'id',
+            ordinal: 1,
+            name: 'fk',
+          }),
+          mysqlFk({
+            fromTable: 'child',
+            fromColumn: 'b',
+            toTable: 'other',
+            toColumn: 'id',
+            ordinal: 2,
+            name: 'fk',
+          }),
+        ],
+      }).query,
+      { database: 'app' },
+    );
+    assert.equal(mysqlPartial.warnings.count, 1);
+    assert.match(
+      mysqlPartial.warnings.messages.join('\n'),
+      /dropped 1 foreign-key row\(s\) because one or both tables are not among the kept tables/,
+    );
+    assert.equal(
+      mysqlPartial.schemaDoc,
+      'CREATE TABLE child (\n  a int NOT NULL,\n  b int NOT NULL,\n  CONSTRAINT fk FOREIGN KEY (a) REFERENCES parent (id)\n);\n\nCREATE TABLE parent (\n  id int NOT NULL\n);',
+    );
   });
 });
 

@@ -96,7 +96,7 @@ const { schemaDoc } = await fetchMysqlSchemaDoc(mysql2QueryFn(pool), {
 - foreign-key rows dropped because a table is not kept;
 - check rows dropped because `includeTables` / `excludeTables` removed that table;
 - native-enum rows whose type was used only by a filtered-out table;
-- foreign-key rows dropped because a constraint or column name is empty or whitespace-only, or because a MySQL referenced column name is null;
+- foreign-key rows dropped because a constraint or column name is empty, whitespace-only, or only invisible characters, or because a MySQL referenced column name is null;
 - unmatched filter names.
 
 A null required name is not counted: it throws.
@@ -130,7 +130,9 @@ A foreign-key row is kept only when both tables are among the kept column rows. 
 
 `ordinal_position` / `ORDINAL_POSITION` must be a positive integer: a finite integer number `>= 1`, a bigint from `1n` through `Number.MAX_SAFE_INTEGER`, or a string of digits that does not start with `0`. `0`, negatives, and fractions throw.
 
-An empty or whitespace-only `constraint_name`, `from_column`, or `to_column` (MySQL: `CONSTRAINT_NAME`, `COLUMN_NAME`, or `REFERENCED_COLUMN_NAME`, and also a null `REFERENCED_COLUMN_NAME`) drops every row of that constraint, so a composite key is not emitted with a missing column. Those rows are counted in `warnings`. The check is `trim() === ''`. A non-blank name is not rewritten, so `' id '` stays `' id '`. A null or `undefined` required name throws `must be a string` (for example `pg.foreignKeys: constraint_name must be a string`) and is not a warning. `mapPgForeignKeyRows` and `mapMysqlForeignKeyRows` would otherwise drop only the falsy row and could emit the shorter key.
+An empty or whitespace-only `constraint_name`, `from_column`, or `to_column` (MySQL: `CONSTRAINT_NAME`, `COLUMN_NAME`, or `REFERENCED_COLUMN_NAME`, and also a null `REFERENCED_COLUMN_NAME`) drops every row of that constraint, so a composite key is not emitted with a missing column. A name made only of whitespace or Unicode format characters is treated the same way. That includes zero-width and other invisible characters such as U+200B, U+200C, U+200D, U+FEFF, and U+2060. Those rows are counted in `warnings`. A non-blank name is not rewritten, so `' id '` stays `' id '`, and a name that also contains a visible character is kept as returned. A null or `undefined` required name throws `must be a string` (for example `pg.foreignKeys: constraint_name must be a string`) and is not a warning. `mapPgForeignKeyRows` and `mapMysqlForeignKeyRows` would otherwise drop only the falsy row and could emit the shorter key.
+
+A column row whose `table_name` or `column_name` is empty or whitespace-only (`trim() === ''`) throws `must be a non-empty string` and names the query key, for example `pg.columns: column_name must be a non-empty string` (the same shape for `mysql.columns` and for `table_name`). The message does not include the row value. A null or `undefined` column name still throws `must be a string`.
 
 Check rows are passed through only when `buildCheckEnumMap`'s normalization (one leading `public.`, then remove `"`) equals a kept table. A check dropped because the caller filtered that table out is counted. A domain constraint is `conrelid` 0, and `conrelid::regclass::text` is the bare name `-`. A table literally named `-` is quoted by `regclass::text` as `"-"` (or `public."-"`). The helper skips a bare `-` row and does not count it. The quoted form normalizes to `-` and is kept when that table is kept. A name that contains an embedded quote (`"we""ird"` normalizes to `weird`), and a name that does not match any fetched table, are omitted and do not increase `warnings.count`. A dotted name such as `public."a.b"` still matches table `a.b`. Non-public schemas are out of scope for this version.
 
