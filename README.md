@@ -6,6 +6,18 @@ This package is **0.x**. The schemaDoc text format is **not a stable contract**.
 
 Experimental renderers are not part of this package.
 
+## Why I wrote this
+
+I wanted one small, predictable way to turn what a database says about its own tables into a compact block of DDL text that a person, a test, or a downstream tool can read. The output is plain `CREATE TABLE` text, with enum values in comments and foreign keys after the columns.
+
+The job is narrow, so I kept the library narrow. A few choices follow from that, and they are on purpose:
+
+- **Rows in, DDL out is the core.** The builders are pure functions over rows you already have. They do no I/O.
+- **The library never opens a database connection.** If you want it to run the shipped SQL for you, you inject a `QueryFn`. It takes no credentials, and `pg` and `mysql2` are not dependencies. You own the connection, the pooling, the role, and the transaction. I did not want to hold your secrets or decide your driver.
+- **An empty result is an error by default.** Zero kept column rows almost always means a wrong database name, the wrong schema, missing privileges, or a filter that removed everything. A quiet empty string hides that. `allowEmpty: true` lets you opt in when empty is a valid answer.
+- **Typos in filters fail loudly.** An `excludeTables` name that matches nothing throws, because a typo would leave the table you meant to hide in the output.
+- **The output format is not promised yet.** That is why this is 0.x and why you should pin exact versions.
+
 ## Example
 
 ```ts
@@ -51,8 +63,6 @@ const { schemaDoc, tableCount } = buildPostgresSchemaDoc(
 );
 ```
 
-Pin exact versions, since output text may change in minor releases.
-
 The package exports the row types callers pass in: `SchemaColumnRow`, `SchemaForeignKeyRow`, `PgColumnQueryRow`, `PgNativeEnumQueryRow`, `PgCheckQueryRow`, `PgForeignKeyQueryRow`, `MysqlColumnQueryRow`, `MysqlForeignKeyQueryRow`, and `SchemaDocResult`, plus the parsed-table types `SchemaTableMeta`, `SchemaColumnMeta`, and `SchemaRelationMeta`. It also exports the six SQL constants, `QueryFn`, and the fetch helpers described below.
 
 `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` are left off. Turning those flags on would require edits in the files `pnpm diff-bodies` compares.
@@ -79,9 +89,25 @@ const { schemaDoc } = await fetchMysqlSchemaDoc(mysql2QueryFn(pool), {
 
 `pgQueryFn` ignores `params` and calls `query(sql)` with no second argument. The PostgreSQL statements have no placeholders, and node-postgres treats `query(sql, [])` differently from `query(sql)`. `mysql2QueryFn` accepts the mysql2 promise API. It checks that the result is a `[rows, fields]` tuple and that `rows` is an array. `connection.query(sql, values)` escapes `values` in the client. [`execute`](https://sidorares.github.io/node-mysql2/docs/documentation/prepared-statements) is the prepared-statement API. A caller who wants that can pass their own query function.
 
-`fetchPostgresIntrospectionRows` and `fetchMysqlIntrospectionRows` return the same row arrays the builders take, plus `warnings`. `fetchPostgresSchemaDoc` and `fetchMysqlSchemaDoc` return `{ schemaDoc, tableCount, warnings }`. `warnings.count` is the number of foreign-key rows dropped because a table is not kept, check rows dropped because `includeTables` / `excludeTables` removed that table, native-enum rows whose type was used only by a filtered-out table, foreign-key rows dropped because a constraint or column name is empty or whitespace-only, or because a MySQL referenced column name is null, and unmatched filter names. A null required name is not counted: it throws. `warnings.messages` are short summaries and do not include database row values. `warnings.unmatched` lists caller-supplied `includeTables` and `excludeTables` names that matched no fetched table. A table the role cannot see is not in the fetched names, so naming it in `excludeTables` is unmatched.
+`fetchPostgresIntrospectionRows` and `fetchMysqlIntrospectionRows` return the same row arrays the builders take, plus `warnings`. `fetchPostgresSchemaDoc` and `fetchMysqlSchemaDoc` return `{ schemaDoc, tableCount, warnings }`.
 
-Options, checked before the first statement:
+### Warnings
+
+`warnings.count` is the number of:
+
+- foreign-key rows dropped because a table is not kept;
+- check rows dropped because `includeTables` / `excludeTables` removed that table;
+- native-enum rows whose type was used only by a filtered-out table;
+- foreign-key rows dropped because a constraint or column name is empty or whitespace-only, or because a MySQL referenced column name is null;
+- unmatched filter names.
+
+A null required name is not counted: it throws.
+
+`warnings.messages` are short summaries and do not include database row values. `warnings.unmatched` lists caller-supplied `includeTables` and `excludeTables` names that matched no fetched table. A table the role cannot see is not in the fetched names, so naming it in `excludeTables` is unmatched.
+
+### Options
+
+Options are checked before the first statement.
 
 - `includeTables` / `excludeTables`: arrays of exact `table_name` strings, case-sensitive as the database returned them. A string or any other non-array throws. When both are set, inclusion is applied first: a table is kept only when it is in `includeTables` and not in `excludeTables`. `{ includeTables: ['a', 'b'], excludeTables: ['a'] }` keeps `b`. Omitted means no filter of that kind. `includeTables: []` is an empty allow-list and keeps no tables. `includeTables: ['']` does not match a column row (`table_name` cannot be empty) and is an unmatched name. A name that matches no fetched table is unmatched, including a table the current role cannot see. The same name in both lists is recorded once. Unmatched `excludeTables` names throw, because a typo would leave that table in the document. Unmatched `includeTables` names are recorded on `warnings.unmatched` and do not throw. `strictFilters: true` throws for unmatched include names as well. `strictFilters` must be a boolean when it is set. `strictFilters: false` turns an unmatched exclude name into a warning and does not remove a table.
 - `maxTables`: a non-negative integer. `Infinity`, `null`, a string such as `'2'`, `NaN`, fractions, and negative numbers throw before any statement runs. The cap counts distinct kept table names, not column rows and not tables removed by a filter. A view is counted when its `table_name` appears on a column row. Throw when that number is greater than the cap. The helpers do not drop tables to fit the cap. A valid cap is compared after every statement has already returned, so it does not reduce database load.
@@ -102,17 +128,23 @@ A thrown error from the query function is wrapped as `Error` with the query key 
 
 Use a least-privilege role that can read metadata. The library cannot force a read-only transaction, because you own the connection. Table names, column names, and enum labels can contain business data. They are copied into `schemaDoc`. Anything you pass that text to, for example an LLM prompt, receives those values. Pass `includeTables` or `excludeTables` when the catalog is wider than that text should be.
 
-A foreign-key row is kept only when both tables are among the kept column rows. This applies even when you do not pass `excludeTables`: a role can see `pg_constraint` and still be unable to read the columns. `to_table` (MySQL: `REFERENCED_TABLE_NAME`) is matched by table name only. A table with the same name in another schema or database can create a false edge. That is a known limitation. Foreign keys dropped because a table is not kept are counted in `warnings`. `ordinal_position` / `ORDINAL_POSITION` must be a positive integer: a finite integer number `>= 1`, a bigint from `1n` through `Number.MAX_SAFE_INTEGER`, or a string of digits that does not start with `0`. `0`, negatives, and fractions throw. An empty or whitespace-only `constraint_name`, `from_column`, or `to_column` (MySQL: `CONSTRAINT_NAME`, `COLUMN_NAME`, or `REFERENCED_COLUMN_NAME`, and also a null `REFERENCED_COLUMN_NAME`) drops every row of that constraint, so a composite key is not emitted with a missing column. Those rows are counted in `warnings`. The check is `trim() === ''`. A non-blank name is not rewritten, so `' id '` stays `' id '`. A null or `undefined` required name throws `must be a string` (for example `pg.foreignKeys: constraint_name must be a string`) and is not a warning. `mapPgForeignKeyRows` and `mapMysqlForeignKeyRows` would otherwise drop only the falsy row and could emit the shorter key.
+A foreign-key row is kept only when both tables are among the kept column rows. This applies even when you do not pass `excludeTables`: a role can see `pg_constraint` and still be unable to read the columns. `to_table` (MySQL: `REFERENCED_TABLE_NAME`) is matched by table name only. A table with the same name in another schema or database can create a false edge. That is a known limitation. Foreign keys dropped because a table is not kept are counted in `warnings`.
+
+`ordinal_position` / `ORDINAL_POSITION` must be a positive integer: a finite integer number `>= 1`, a bigint from `1n` through `Number.MAX_SAFE_INTEGER`, or a string of digits that does not start with `0`. `0`, negatives, and fractions throw.
+
+An empty or whitespace-only `constraint_name`, `from_column`, or `to_column` (MySQL: `CONSTRAINT_NAME`, `COLUMN_NAME`, or `REFERENCED_COLUMN_NAME`, and also a null `REFERENCED_COLUMN_NAME`) drops every row of that constraint, so a composite key is not emitted with a missing column. Those rows are counted in `warnings`. The check is `trim() === ''`. A non-blank name is not rewritten, so `' id '` stays `' id '`. A null or `undefined` required name throws `must be a string` (for example `pg.foreignKeys: constraint_name must be a string`) and is not a warning. `mapPgForeignKeyRows` and `mapMysqlForeignKeyRows` would otherwise drop only the falsy row and could emit the shorter key.
 
 Check rows are passed through only when `buildCheckEnumMap`'s normalization (one leading `public.`, then remove `"`) equals a kept table. A check dropped because the caller filtered that table out is counted. A domain constraint is `conrelid` 0, and `conrelid::regclass::text` is the bare name `-`. A table literally named `-` is quoted by `regclass::text` as `"-"` (or `public."-"`). The helper skips a bare `-` row and does not count it. The quoted form normalizes to `-` and is kept when that table is kept. A name that contains an embedded quote (`"we""ird"` normalizes to `weird`), and a name that does not match any fetched table, are omitted and do not increase `warnings.count`. A dotted name such as `public."a.b"` still matches table `a.b`. Non-public schemas are out of scope for this version.
 
-The native-enum statement has no schema predicate. Two enum types with the same `typname` in different schemas are merged by `typname`. `fetchPostgresIntrospectionRows` keeps a native-enum row when its `typname` equals `udt_name` on a kept column. An enum used only by a table the caller filtered out is counted in `warnings`. An enum that no fetched column uses is omitted and is not counted. A PostgreSQL enum array column reports `udt_name` as `_typname` (a leading underscore). That does not equal `typname`, so those labels are omitted and are not a filter warning unless some other fetched column uses the type name itself. The library does not sort table names. PostgreSQL order is whatever `ORDER BY table_name` returns. On PostgreSQL 12 and newer, `information_schema` name columns are the domain `sql_identifier` and sort under collation `"C"` ([release notes](https://www.postgresql.org/docs/release/12.0/)). CI initializes PostgreSQL with `C.UTF-8`, so that claim rests on the release notes, not on a non-C database locale in CI. MySQL order is whatever `ORDER BY TABLE_NAME` returns. Do not rely on a specific MySQL order across servers: `INFORMATION_SCHEMA` string columns use `utf8mb3_general_ci`, and identifier case also depends on `lower_case_table_names`. Enum label order follows `LC_ALL` via `localeCompare`.
+The native-enum statement has no schema predicate. Two enum types with the same `typname` in different schemas are merged by `typname`. `fetchPostgresIntrospectionRows` keeps a native-enum row when its `typname` equals `udt_name` on a kept column. An enum used only by a table the caller filtered out is counted in `warnings`. An enum that no fetched column uses is omitted and is not counted. A PostgreSQL enum array column reports `udt_name` as `_typname` (a leading underscore). That does not equal `typname`, so those labels are omitted and are not a filter warning unless some other fetched column uses the type name itself.
+
+The library does not sort table names. PostgreSQL order is whatever `ORDER BY table_name` returns. On PostgreSQL 12 and newer, `information_schema` name columns are the domain `sql_identifier` and sort under collation `"C"` ([release notes](https://www.postgresql.org/docs/release/12.0/)). CI initializes PostgreSQL with `C.UTF-8`, so that claim rests on the release notes, not on a non-C database locale in CI. MySQL order is whatever `ORDER BY TABLE_NAME` returns. Do not rely on a specific MySQL order across servers: `INFORMATION_SCHEMA` string columns use `utf8mb3_general_ci`, and identifier case also depends on `lower_case_table_names`. Enum label order follows `LC_ALL` via `localeCompare`.
 
 MySQL `opts.database` is required. `mysql2QueryFn` sends it as a client-escaped `query` value, not as a server-side bind. There is no `SELECT DATABASE()` statement. Choosing `mysql`, `sys`, `performance_schema`, or `information_schema` is the caller's decision; the helper does not reject those names.
 
 ## Known limits
 
-These behaviors are pinned by `test/known-limits.test.ts`, `test/degenerate-inputs.test.ts`, and the synthetic goldens. The compared function bodies match the frozen reference snapshot at commit `fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2`. `src/guidance-types.ts` and the exports in `src/index.ts` are not part of that compare. Output-changing fixes are a minor version or higher and are called out in the changelog.
+I would rather list what the library gets wrong than have you find out in production. These behaviors are pinned by `test/known-limits.test.ts`, `test/degenerate-inputs.test.ts`, and the synthetic goldens. The compared function bodies match the frozen reference snapshot at commit `fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2`. `src/guidance-types.ts` and the exports in `src/index.ts` are not part of that compare. Output-changing fixes are a minor version or higher and are called out in the changelog.
 
 - PostgreSQL column SQL hardcodes `table_schema = 'public'`, and `buildPostgresSchemaDoc` does not apply that filter: a row named `secret_accounts` is still rendered.
 - The PostgreSQL foreign-key SQL filters `public` on the referencing table and does not qualify the referenced schema; the rendered line is `REFERENCES regions (id)`, with no `REFERENCES public.`.
@@ -147,7 +179,7 @@ These behaviors are pinned by `test/known-limits.test.ts`, `test/degenerate-inpu
 
 ## Function bodies
 
-`pnpm diff-bodies` is offline. It pins these inputs against the frozen reference snapshot at commit `fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2` (`test/reference/fa3cbe7/`):
+Part of the parsing and grouping code is deliberately frozen against a reference snapshot, so a refactor cannot quietly change the output. `pnpm diff-bodies` is offline. It pins these inputs against the frozen reference snapshot at commit `fa3cbe777545adfb9f3ce2b9c77e394a1daa83e2` (`test/reference/fa3cbe7/`):
 
 - Byte for byte, after rewriting every `from '...'` specifier to `from 'NORMALIZED'`: `src/schema-enum.ts`, `src/schema-parse.ts`, and `src/schema-fk.ts`. Exact `from` lines are also pinned (`schema-parse.ts` imports `./guidance-types`, `schema-fk.ts` imports `./schema-enum`, and `schema-enum.ts` has none), because that rewrite would hide an import-path redirect. `require()` and side-effect `import '...'` are not in those files and are not in the pin list; a one-sided addition still fails the byte compare.
 - By function body: `buildPostgresSchemaDoc` and `buildMysqlSchemaDoc` in `src/introspect.ts`, against `datasource.service.ts` lines 230–245 and 341–369. The only normalization is dedent, plus replacing `await this.fetchPostgresNativeEnums(client, rows)`, `await this.fetchPostgresCheckEnums(client)`, `await this.fetchPostgresForeignKeys(client)`, and `await this.fetchMysqlForeignKeys(conn, ds.database)` with `buildNativeEnumMap(rows, nativeEnumRows)`, `buildCheckEnumMap(checkRows)`, `mapPgForeignKeyRows(foreignKeyRows)`, and `mapMysqlForeignKeyRows(foreignKeyRows)`. Any other difference inside those bodies fails. An export added elsewhere in `src/introspect.ts` does not.
