@@ -67,7 +67,7 @@ The package exports the row types callers pass in: `SchemaColumnRow`, `SchemaFor
 
 ## Fetching introspection rows
 
-Rows in, DDL out stays the core. `fetchPostgresSchemaDoc` and `fetchMysqlSchemaDoc` are opt-in: they run the shipped statements through a query function you supply, then call the builders above. The package does not open a connection and does not take credentials. `pg` and `mysql2` are not dependencies. The helpers target **0.2.0**. `package.json` is still `0.1.0`.
+Rows in, DDL out stays the core. `fetchPostgresSchemaDoc` and `fetchMysqlSchemaDoc` are opt-in: they run the shipped statements through a query function you supply, then call the builders above. The package does not open a connection and does not take credentials. `pg` and `mysql2` are not dependencies. The fetch helpers are new in **0.2.0**.
 
 ```ts
 import { fetchPostgresSchemaDoc, pgQueryFn } from 'ffp-schema-doc';
