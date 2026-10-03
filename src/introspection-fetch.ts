@@ -395,6 +395,18 @@ function readTableName(row: Record<string, unknown>, queryKey: string): string {
   return value;
 }
 
+function readColumnIdentifier(
+  row: Record<string, unknown>,
+  queryKey: string,
+  field: string,
+): string {
+  const value = readString(row, queryKey, field);
+  if (value.trim() === '') {
+    throw new Error(`${queryKey}: ${field} must be a non-empty string`);
+  }
+  return value;
+}
+
 function readNullableFlag(row: Record<string, unknown>, queryKey: string): 'YES' | 'NO' {
   const value = readString(row, queryKey, 'is_nullable');
   if (value === 'YES' || value === 'NO') return value;
@@ -425,8 +437,8 @@ function mapPgColumns(raw: readonly unknown[]): PgColumnQueryRow[] {
   for (let i = 0; i < raw.length; i += 1) {
     const row = asRow(raw[i], 'pg.columns', 'table_name');
     rows.push({
-      table_name: readTableName(row, 'pg.columns'),
-      column_name: readString(row, 'pg.columns', 'column_name'),
+      table_name: readColumnIdentifier(row, 'pg.columns', 'table_name'),
+      column_name: readColumnIdentifier(row, 'pg.columns', 'column_name'),
       data_type: readString(row, 'pg.columns', 'data_type'),
       is_nullable: readNullableFlag(row, 'pg.columns'),
       udt_name: readString(row, 'pg.columns', 'udt_name'),
@@ -480,8 +492,8 @@ function mapMysqlColumns(raw: readonly unknown[]): MysqlColumnQueryRow[] {
   for (let i = 0; i < raw.length; i += 1) {
     const row = asRow(raw[i], 'mysql.columns', 'table_name');
     rows.push({
-      table_name: readTableName(row, 'mysql.columns'),
-      column_name: readString(row, 'mysql.columns', 'column_name'),
+      table_name: readColumnIdentifier(row, 'mysql.columns', 'table_name'),
+      column_name: readColumnIdentifier(row, 'mysql.columns', 'column_name'),
       data_type: readString(row, 'mysql.columns', 'data_type'),
       is_nullable: readNullableFlag(row, 'mysql.columns'),
       column_type: readString(row, 'mysql.columns', 'column_type'),
@@ -647,8 +659,13 @@ function filterNativeEnumRows(
   return { rows: kept, dropped };
 }
 
+/**
+ * Whitespace, or only whitespace plus Unicode format characters (zero-width
+ * and other invisible marks such as U+200B, U+200C, U+200D, U+FEFF, U+2060).
+ * A name that also contains a visible character is not blank and is not rewritten.
+ */
 function isBlankIdentifier(value: string): boolean {
-  return value.trim() === '';
+  return /^(?:[\s\p{Cf}])*$/u.test(value);
 }
 
 function dropIncompleteFkGroups<T>(
@@ -700,7 +717,8 @@ function filterPgForeignKeys(
     (row) => `${row.from_table}::${row.constraint_name}`,
     // Empty from_table / to_table are already dropped: keptTables only has
     // non-empty names from column rows, so has('') is false.
-    // Whitespace-only names are dropped. A non-blank name is not rewritten.
+    // Whitespace-only and invisible-only names are dropped. A non-blank name
+    // is not rewritten.
     (row) =>
       isBlankIdentifier(row.constraint_name) ||
       isBlankIdentifier(row.from_column) ||
@@ -730,13 +748,13 @@ function filterMysqlForeignKeys(
     kept,
     (row) => `${row.TABLE_NAME}::${row.CONSTRAINT_NAME}`,
     // Empty TABLE_NAME / REFERENCED_TABLE_NAME are already dropped by the
-    // kept-table check above. Whitespace-only names are dropped. A non-blank
-    // name is not rewritten.
+    // kept-table check above. Whitespace-only and invisible-only names are
+    // dropped. A non-blank name is not rewritten.
     (row) =>
       isBlankIdentifier(row.CONSTRAINT_NAME) ||
       isBlankIdentifier(row.COLUMN_NAME) ||
       row.REFERENCED_COLUMN_NAME === null ||
-      row.REFERENCED_COLUMN_NAME.trim() === '',
+      isBlankIdentifier(row.REFERENCED_COLUMN_NAME),
   );
   return { rows: identifiers.rows, dropped, emptyColumns: identifiers.dropped };
 }
@@ -764,7 +782,7 @@ function warningsFor(counts: {
   }
   if (counts.emptyForeignKeyColumns > 0) {
     messages.push(
-      `dropped ${counts.emptyForeignKeyColumns} foreign-key row(s) with an empty or whitespace-only constraint or column name`,
+      `dropped ${counts.emptyForeignKeyColumns} foreign-key row(s) with a constraint or column name that is only whitespace or Unicode format characters`,
     );
   }
   if (counts.unmatched.length > 0) {

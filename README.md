@@ -4,8 +4,6 @@ Build and parse schemaDoc (DDL text) from database introspection rows. Rows in, 
 
 This package is **0.x**. The schemaDoc text format is **not a stable contract**. Pin exact versions, since output text may change in minor releases.
 
-Experimental renderers are not part of this package.
-
 ## Why I wrote this
 
 I wanted one small, predictable way to turn what a database says about its own tables into a compact block of DDL text that a person, a test, or a downstream tool can read. The output is plain `CREATE TABLE` text, with enum values in comments and foreign keys after the columns.
@@ -69,7 +67,7 @@ The package exports the row types callers pass in: `SchemaColumnRow`, `SchemaFor
 
 ## Fetching introspection rows
 
-Rows in, DDL out stays the core. `fetchPostgresSchemaDoc` and `fetchMysqlSchemaDoc` are opt-in: they run the shipped statements through a query function you supply, then call the builders above. The package does not open a connection and does not take credentials. `pg` and `mysql2` are not dependencies. The helpers target **0.2.0**. `package.json` is still `0.1.0`.
+Rows in, DDL out stays the core. `fetchPostgresSchemaDoc` and `fetchMysqlSchemaDoc` are opt-in: they run the shipped statements through a query function you supply, then call the builders above. The package does not open a connection and does not take credentials. `pg` and `mysql2` are not dependencies. The fetch helpers are new in **0.2.0**.
 
 ```ts
 import { fetchPostgresSchemaDoc, pgQueryFn } from 'ffp-schema-doc';
@@ -98,7 +96,7 @@ const { schemaDoc } = await fetchMysqlSchemaDoc(mysql2QueryFn(pool), {
 - foreign-key rows dropped because a table is not kept;
 - check rows dropped because `includeTables` / `excludeTables` removed that table;
 - native-enum rows whose type was used only by a filtered-out table;
-- foreign-key rows dropped because a constraint or column name is empty or whitespace-only, or because a MySQL referenced column name is null;
+- foreign-key rows dropped because a constraint or column name is only whitespace or Unicode format characters (`\p{Cf}`), or because a MySQL referenced column name is null;
 - unmatched filter names.
 
 A null required name is not counted: it throws.
@@ -132,7 +130,9 @@ A foreign-key row is kept only when both tables are among the kept column rows. 
 
 `ordinal_position` / `ORDINAL_POSITION` must be a positive integer: a finite integer number `>= 1`, a bigint from `1n` through `Number.MAX_SAFE_INTEGER`, or a string of digits that does not start with `0`. `0`, negatives, and fractions throw.
 
-An empty or whitespace-only `constraint_name`, `from_column`, or `to_column` (MySQL: `CONSTRAINT_NAME`, `COLUMN_NAME`, or `REFERENCED_COLUMN_NAME`, and also a null `REFERENCED_COLUMN_NAME`) drops every row of that constraint, so a composite key is not emitted with a missing column. Those rows are counted in `warnings`. The check is `trim() === ''`. A non-blank name is not rewritten, so `' id '` stays `' id '`. A null or `undefined` required name throws `must be a string` (for example `pg.foreignKeys: constraint_name must be a string`) and is not a warning. `mapPgForeignKeyRows` and `mapMysqlForeignKeyRows` would otherwise drop only the falsy row and could emit the shorter key.
+An empty or whitespace-only `constraint_name`, `from_column`, or `to_column` (MySQL: `CONSTRAINT_NAME`, `COLUMN_NAME`, or `REFERENCED_COLUMN_NAME`, and also a null `REFERENCED_COLUMN_NAME`) drops every row of that constraint, so a composite key is not emitted with a missing column. A name made only of whitespace or Unicode format characters (`\p{Cf}`) is treated the same way. That includes U+200B, U+200C, U+200D, U+FEFF, and U+2060. Those rows are counted in `warnings`. A non-blank name is not rewritten, so `' id '` stays `' id '`, and a name that also contains a visible character is kept as returned. A null or `undefined` required name throws `must be a string` (for example `pg.foreignKeys: constraint_name must be a string`) and is not a warning. `mapPgForeignKeyRows` and `mapMysqlForeignKeyRows` would otherwise drop only the falsy row and could emit the shorter key.
+
+A blank or whitespace-only `table_name` or `column_name` on a column row makes the whole fetch throw. That is intentional. The error is `must be a non-empty string`. It names the query key, for example `pg.columns: column_name must be a non-empty string` (the same shape for `mysql.columns` and for `table_name`), and it does not name the table. Row values are never included. `includeTables` and `excludeTables` cannot bypass it, because that validation runs before filtering. The column and table-name check uses `trim()`. Every Unicode format character (`\p{Cf}`) except U+FEFF is accepted as a column or table name, so a column name of only U+200B is accepted. A column or table name of only U+FEFF, only U+00A0, or only whitespace throws, because `trim()` removes those. A foreign-key name made only of whitespace or any Unicode format character (`\p{Cf}`), including U+200B and U+FEFF, is dropped and counted in `warnings`. U+FE0F, U+034F, U+3164, U+115F, and U+2800 are not treated as blank, for foreign-key names or for column names. A null or `undefined` column name still throws `must be a string`.
 
 Check rows are passed through only when `buildCheckEnumMap`'s normalization (one leading `public.`, then remove `"`) equals a kept table. A check dropped because the caller filtered that table out is counted. A domain constraint is `conrelid` 0, and `conrelid::regclass::text` is the bare name `-`. A table literally named `-` is quoted by `regclass::text` as `"-"` (or `public."-"`). The helper skips a bare `-` row and does not count it. The quoted form normalizes to `-` and is kept when that table is kept. A name that contains an embedded quote (`"we""ird"` normalizes to `weird`), and a name that does not match any fetched table, are omitted and do not increase `warnings.count`. A dotted name such as `public."a.b"` still matches table `a.b`. Non-public schemas are out of scope for this version.
 
@@ -230,16 +230,35 @@ The package builds to CommonJS with shipped `.d.ts` types. There is no dual ESM 
 
 ## Publish
 
-Tags must be `vX.Y.Z`. Any other tag, including prereleases, fails the workflow. Prereleases are not published under `--tag next`. The test job and the publish job each run `scripts/check-publish-tag.mjs` and fail unless the tag equals `v` plus the `package.json` version. The publish job runs that check before either publish step. The tagged commit must be an ancestor of `origin/main`, and the CI workflow must already have a successful run for that commit.
+Tags must be `vX.Y.Z`. Any other tag, including prereleases, fails the workflow. Prereleases are not published under `--tag next`. The test job and the publish job each run `scripts/check-publish-tag.mjs` and fail unless the tag equals `v` plus the `package.json` version. The publish job runs that check before the publish step. The tagged commit must be an ancestor of `origin/main`. `ci.yml` and `integration.yml` must each already have a successful run for that commit. If either run is missing or not successful, the publish job fails and names that workflow. `integration.yml` already runs on pushes to `main`, so a commit that landed on `main` can satisfy that check.
 
-The publish workflow has two jobs. `test` has `contents: read` only and sets `LC_ALL=C.UTF-8` (present on GitHub ubuntu runners). The test step logs `echo $LC_ALL` and `locale` before `pnpm test`. `publish` needs `test`, uses the `npm-publish` environment, and has `contents: read`, `id-token: write`, and `actions: read` (the last is what lets the job read the CI run for this commit). The publish job does not run the test suite.
+Publishing uses OIDC trusted publishing only. The publish command unsets `NODE_AUTH_TOKEN`. There is no registry-token fallback.
 
-The publish job installs Node 22, then `npm install -g npm@^11.5.1` and logs `npm --version`. OIDC trusted publishing needs npm 11.5.1 or newer, and Node 22 bundles npm 10.x. It installs dependencies with `pnpm install --frozen-lockfile --ignore-scripts`, then `pnpm build`, which writes `dist` before any publish step. Publish uses `npm publish`, not `pnpm publish`. Both publish commands pass `--ignore-scripts`, so `prepack` (`pnpm build`) does not run again and cannot read `NODE_AUTH_TOKEN`.
+### Owner prerequisites
 
-`NPM_TOKEN` is read from the `npm-publish` environment (`environment: npm-publish` on the job). The owner moves the repository secret into that environment. The first-publish fallback is the only step that uses it, and it still emits `::warning::`.
+These steps are manual. This repository does not configure them.
 
-If this version is already on the registry, the job compares the published `gitHead` to the tagged commit and the published `dist.integrity` to a local `npm pack`. A match skips publish. A mismatch fails.
+- The `npm-publish` environment must already exist, and it must have required reviewers. If the environment does not exist, GitHub creates one with no reviewers the first time the job references it, so anyone who can push a `v*` tag could publish.
+- Protect `v*` tags with a ruleset that restricts create, update, and delete.
+- On npmjs.com, configure a trusted publisher for owner `FFP-Tech-Lab`, repository `ffp-schema-doc`, workflow file `publish-npm.yml`, and environment `npm-publish`. Those four values are case-sensitive.
+- Make the `integration.yml` check required on `main`.
+- Order for `0.2.0`: merge pull request #3, wait until both `ci.yml` and `integration.yml` have succeeded for that commit on `main`, then push `v0.2.0`. Pushing the tag before those runs exist fails the publish job's precheck on purpose.
+- After the first successful OIDC publish, and after checking the provenance attestation, delete `NPM_TOKEN` from the environment secrets and the repository secrets, and revoke that token on npm. Optionally require 2FA for the package and disallow tokens.
 
-If the package name is not on the registry yet, trusted publishing cannot be configured, so the job does not try OIDC. It logs that this is the first publish and emits `::warning::`, then publishes with `NPM_TOKEN`. That is the only fallback. A transient `npm view` error fails the job. After 0.1.0 is published, configure a trusted publisher on npm and remove the `NPM_TOKEN` step. Later versions, while the package exists, publish with OIDC only (`NODE_AUTH_TOKEN` unset).
+The publish workflow has two jobs. `test` has `contents: read` only and sets `LC_ALL=C.UTF-8` (present on GitHub ubuntu runners). The test step logs `echo $LC_ALL` and `locale` before `pnpm test`. `publish` needs `test`, uses the `npm-publish` environment, and has `contents: read`, `id-token: write`, and `actions: read` (the last is what lets the job read the `ci.yml` and `integration.yml` runs for this commit). The publish job does not run the test suite.
 
-Both publish commands pass `--provenance` and `--ignore-scripts`. Provenance is a sigstore attestation signed with the workflow OIDC token. It is separate from registry login. The token path still requests that attestation.
+The publish job installs Node 22, then `npm install -g npm@^11.5.1` and logs `npm --version`. OIDC trusted publishing needs npm 11.5.1 or newer, and Node 22 bundles npm 10.x. It installs dependencies with `pnpm install --frozen-lockfile --ignore-scripts`, then `pnpm build`, which writes `dist` before any publish step. Publish uses `npm publish`, not `pnpm publish`. The publish command passes `--ignore-scripts`, so `prepack` (`pnpm build`) does not run again and cannot read `NODE_AUTH_TOKEN`.
+
+If this version is already on the registry, the job compares the published `gitHead` to the tagged commit. It also compares per-file sha256 of the extracted published tarball (`npm pack ffp-schema-doc@<version>`) with a local `npm pack`. Tarball metadata (timestamps, ownership, gzip headers) is ignored. A match skips publish. A mismatch fails. `npm view` returning 404 means this version is not published. Any other `npm view` error fails the job. When this version is not on the registry yet, the job publishes with OIDC trusted publishing (`NODE_AUTH_TOKEN` unset).
+
+Before that publish, the job checks that `npm pack --dry-run --json` lists the same paths as `package.json` plus the `files` field entries found on disk, and that the packed version equals the tag version. That check does not allowlist the contents of `dist/`. An extra file under `dist/`, such as `.env`, a `*.tgz`, or a `*.test.js` file, would be published. The CommonJS smoke check loads `dist/index.js` and fails if that entry point is missing. The publish job builds `dist` from a clean checkout (`pnpm install --frozen-lockfile --ignore-scripts`, then `pnpm build`).
+
+### Failure and recovery
+
+An OIDC exchange failure happens before or at `npm publish`, or the registry rejects the publish. The tag stays, and the job goes red. Re-running the failed jobs on the same tag is safe because the idempotency step compares content, and nothing runs after `npm publish`.
+
+After the trusted publisher on npm is fixed (owner `FFP-Tech-Lab`, repository `ffp-schema-doc`, workflow file `publish-npm.yml`, environment `npm-publish`, all case-sensitive), use **Re-run failed jobs** on the same tag. The idempotency check covers a version that is already on the registry. Do not add a registry-token branch as an emergency path.
+
+If a bad `0.2.0` was already published, npm only allows unpublish within 72 hours and with restrictions. Deprecate that version with `npm deprecate ffp-schema-doc@0.2.0 "..."` and publish `0.2.1`. This package is 0.x and makes no format-stability promise. Never move or delete a pushed tag.
+
+The publish command passes `--provenance` and `--ignore-scripts`. Provenance is a sigstore attestation signed with the workflow OIDC token. It is separate from registry login.
